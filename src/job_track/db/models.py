@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, String, Text, create_engine, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -30,6 +30,7 @@ class Job(Base):
         description: Full job description text.
         apply_url: URL to apply for the job on company site.
         source_url: Original URL where job was scraped from.
+        posted_at: Timestamp when job was posted (if available).
         scraped_at: Timestamp when job was scraped.
         tags: JSON array of tags (e.g., "new-grad", "remote").
         is_applied: Whether user has applied to this job.
@@ -47,6 +48,9 @@ class Job(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    posted_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     scraped_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=func.now(), nullable=False
     )
@@ -57,7 +61,7 @@ class Job(Base):
         DateTime, nullable=True
     )
     profile_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    resume_version: Mapped[Optional[int]] = mapped_column(nullable=True)
+    resume_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # Version name or ID
 
     def get_tags(self) -> list[str]:
         """Parse tags JSON into a list."""
@@ -97,6 +101,11 @@ class Profile(Base):
         name: Full name.
         email: Email address.
         phone: Phone number.
+        address_street: Street address.
+        address_city: City.
+        address_state: State/Province.
+        address_zip: ZIP/Postal code.
+        address_country: Country.
         linkedin_url: LinkedIn profile URL.
         github_url: GitHub profile URL.
         portfolio_url: Portfolio/website URL.
@@ -111,12 +120,17 @@ class Profile(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    address_street: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    address_city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    address_state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    address_zip: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    address_country: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     linkedin_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     github_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     portfolio_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     resume_versions: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
-    )  # JSON array of {version, filename, uploaded_at}
+    )  # JSON array of {id, name, filename, uploaded_at, is_named}
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=func.now(), nullable=False
     )
@@ -130,16 +144,42 @@ class Profile(Base):
             return []
         return json.loads(self.resume_versions)
 
-    def add_resume_version(self, filename: str) -> int:
-        """Add a new resume version and return the version number."""
+    def add_resume_version(self, filename: str, name: Optional[str] = None) -> dict:
+        """Add a new resume version and return the version info.
+        
+        Args:
+            filename: The filename of the resume.
+            name: Optional name for the revision. If provided, this is a named revision.
+            
+        Returns:
+            The new version metadata dict.
+        """
         versions = self.get_resume_versions()
-        new_version = len(versions) + 1
-        versions.append({
-            "version": new_version,
+        version_id = str(uuid.uuid4())[:8]
+        is_named = name is not None
+        
+        new_version = {
+            "id": version_id,
+            "name": name if name else f"Resume {len(versions) + 1}",
             "filename": filename,
             "uploaded_at": datetime.datetime.now().isoformat(),
-        })
-        self.resume_versions = json.dumps(versions)
+            "is_named": is_named,
+        }
+        versions.append(new_version)
+        
+        # Keep named versions + 5 most recent unnamed versions
+        named_versions = [v for v in versions if v.get("is_named", False)]
+        unnamed_versions = [v for v in versions if not v.get("is_named", False)]
+        
+        # Keep only the 5 most recent unnamed versions
+        if len(unnamed_versions) > 5:
+            unnamed_versions = unnamed_versions[-5:]
+        
+        # Combine and sort by upload time
+        all_versions = named_versions + unnamed_versions
+        all_versions.sort(key=lambda x: x.get("uploaded_at", ""))
+        
+        self.resume_versions = json.dumps(all_versions)
         return new_version
 
     def get_latest_resume_version(self) -> Optional[dict]:
@@ -148,6 +188,25 @@ class Profile(Base):
         if not versions:
             return None
         return versions[-1]
+    
+    def get_named_resume_versions(self) -> list[dict]:
+        """Get all named resume versions."""
+        versions = self.get_resume_versions()
+        return [v for v in versions if v.get("is_named", False)]
+    
+    def get_full_address(self) -> str:
+        """Get the full address as a formatted string."""
+        parts = []
+        if self.address_street:
+            parts.append(self.address_street)
+        city_state = ", ".join(filter(None, [self.address_city, self.address_state]))
+        if city_state:
+            parts.append(city_state)
+        if self.address_zip:
+            parts.append(self.address_zip)
+        if self.address_country:
+            parts.append(self.address_country)
+        return ", ".join(parts) if parts else ""
 
     def to_dict(self) -> dict:
         """Convert profile to dictionary."""
@@ -156,6 +215,12 @@ class Profile(Base):
             "name": self.name,
             "email": self.email,
             "phone": self.phone,
+            "address_street": self.address_street,
+            "address_city": self.address_city,
+            "address_state": self.address_state,
+            "address_zip": self.address_zip,
+            "address_country": self.address_country,
+            "full_address": self.get_full_address(),
             "linkedin_url": self.linkedin_url,
             "github_url": self.github_url,
             "portfolio_url": self.portfolio_url,

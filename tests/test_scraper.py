@@ -223,3 +223,69 @@ class TestSimpleScraper:
         assert jobs[0].title == "Backend Engineer"
         assert jobs[0].location == "Austin, TX"
         assert jobs[1].title == "Frontend Engineer"
+
+class TestHiringCafeScraper:
+    """Tests for the HiringCafeScraper."""
+
+    def test_search_config_defaults(self):
+        """Test default search configuration."""
+        from job_track.scraper.hiring_cafe import SearchConfig
+        
+        config = SearchConfig()
+        assert config.query == "software engineer"
+        assert config.department == "software-engineering"
+        assert "entry-level" in config.experience_levels
+        assert "internship" in config.experience_levels
+        assert config.location == "United States"
+        assert config.max_results == 100
+
+    def test_new_grad_preset(self):
+        """Test new-grad search preset."""
+        from job_track.scraper.hiring_cafe import SearchConfig
+        
+        config = SearchConfig.new_grad_software_engineer()
+        assert config.query == "software engineer"
+        assert "entry-level" in config.experience_levels
+        assert config.department == "software-engineering"
+
+    def test_intern_preset(self):
+        """Test internship search preset."""
+        from job_track.scraper.hiring_cafe import SearchConfig
+        
+        config = SearchConfig.intern_software_engineer()
+        assert "intern" in config.query.lower()
+        assert "internship" in config.experience_levels
+
+    def test_scraper_builds_url(self):
+        """Test that scraper builds correct search URL."""
+        from job_track.scraper.hiring_cafe import HiringCafeScraper, SearchConfig
+        
+        config = SearchConfig(
+            query="python developer",
+            department="software-engineering",
+            experience_levels=["entry-level"],
+        )
+        scraper = HiringCafeScraper(config=config)
+        url = scraper._build_search_url()
+        
+        assert "hiring.cafe/search" in url
+        assert "python+developer" in url or "python%20developer" in url
+        assert "software-engineering" in url
+        assert "entry-level" in url
+
+    def test_scraper_is_new_grad_detection(self):
+        """Test new-grad job detection."""
+        from job_track.scraper.hiring_cafe import HiringCafeScraper
+        
+        scraper = HiringCafeScraper()
+        
+        # Should be detected as new-grad
+        assert scraper._is_new_grad_job("Junior Software Engineer")
+        assert scraper._is_new_grad_job("Entry Level Developer")
+        assert scraper._is_new_grad_job("New Grad Software Engineer")
+        assert scraper._is_new_grad_job("Associate Engineer")
+        
+        # Should not be detected as new-grad
+        assert not scraper._is_new_grad_job("Senior Software Engineer")
+        assert not scraper._is_new_grad_job("Staff Engineer")
+        assert not scraper._is_new_grad_job("Principal Developer")

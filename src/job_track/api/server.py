@@ -117,6 +117,16 @@ class ScrapeRequest(BaseModel):
     filter_new_grad: bool = False
 
 
+class HiringCafeScrapeRequest(BaseModel):
+    """Model for triggering a hiring.cafe scrape request."""
+
+    query: str = "software engineer"
+    department: Optional[str] = "software-engineering"
+    experience_levels: list[str] = ["entry-level", "internship"]
+    location: str = "United States"
+    max_results: int = 50
+
+
 # Job endpoints
 @app.get("/api/jobs")
 async def list_jobs(
@@ -577,6 +587,133 @@ async def scrape_jobs(request: ScrapeRequest):
         session.close()
 
     return results
+
+
+@app.post("/api/scrape/hiring-cafe")
+async def scrape_hiring_cafe(request: HiringCafeScrapeRequest):
+    """Scrape job listings from hiring.cafe.
+
+    This endpoint uses the hiring.cafe scraper to find new-grad and
+    entry-level software engineering positions. It uses Playwright
+    for JavaScript rendering.
+    
+    Default configuration searches for:
+    - Query: "software engineer"
+    - Department: software-engineering
+    - Experience: entry-level, internship
+    - Location: United States
+    """
+    from job_track.scraper.hiring_cafe import HiringCafeScraper, SearchConfig, PLAYWRIGHT_AVAILABLE
+
+    if not PLAYWRIGHT_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Playwright is not installed. Run: pip install playwright && playwright install chromium"
+        )
+
+    # Create search config from request
+    config = SearchConfig(
+        query=request.query,
+        department=request.department,
+        experience_levels=request.experience_levels,
+        location=request.location,
+        max_results=request.max_results,
+    )
+
+    scraper = HiringCafeScraper(config=config, headless=True)
+    session = get_session()
+    results = {"scraped": 0, "added": 0, "skipped": 0, "errors": []}
+
+    try:
+        # Run the scraper
+        scraped_jobs = await scraper.scrape()
+        results["scraped"] = len(scraped_jobs)
+
+        # Save to database
+        for scraped_job in scraped_jobs:
+            try:
+                # Check if job already exists
+                existing = session.query(Job).filter(
+                    Job.apply_url == scraped_job.apply_url
+                ).first()
+                if existing:
+                    results["skipped"] += 1
+                    continue
+
+                job = Job(
+                    id=scraped_job.generate_id(),
+                    title=scraped_job.title,
+                    company=scraped_job.company,
+                    location=scraped_job.location,
+                    description=scraped_job.description,
+                    apply_url=scraped_job.apply_url,
+                    source_url=scraped_job.source_url,
+                )
+                job.set_tags(scraped_job.tags)
+                session.add(job)
+                results["added"] += 1
+
+            except Exception as e:
+                results["errors"].append({
+                    "job": scraped_job.title,
+                    "error": str(e),
+                })
+
+        session.commit()
+
+    except Exception as e:
+        results["errors"].append({"error": str(e)})
+
+    finally:
+        session.close()
+
+    return results
+
+
+@app.get("/api/scrape/hiring-cafe/presets")
+async def get_hiring_cafe_presets():
+    """Get preset search configurations for hiring.cafe.
+    
+    Returns predefined search configurations for common use cases:
+    - new_grad_swe: New-grad software engineering positions
+    - intern_swe: Software engineering internships
+    """
+    return {
+        "presets": {
+            "new_grad_swe": {
+                "query": "software engineer",
+                "department": "software-engineering",
+                "experience_levels": ["entry-level", "internship"],
+                "location": "United States",
+                "max_results": 50,
+                "description": "New-grad software engineering positions",
+            },
+            "intern_swe": {
+                "query": "software engineer intern",
+                "department": "software-engineering",
+                "experience_levels": ["internship"],
+                "location": "United States",
+                "max_results": 50,
+                "description": "Software engineering internships",
+            },
+            "frontend_new_grad": {
+                "query": "frontend developer",
+                "department": "software-engineering",
+                "experience_levels": ["entry-level", "internship"],
+                "location": "United States",
+                "max_results": 50,
+                "description": "New-grad frontend developer positions",
+            },
+            "backend_new_grad": {
+                "query": "backend engineer",
+                "department": "software-engineering",
+                "experience_levels": ["entry-level", "internship"],
+                "location": "United States",
+                "max_results": 50,
+                "description": "New-grad backend engineer positions",
+            },
+        }
+    }
 
 
 def run():
