@@ -3,6 +3,7 @@
 This module provides job scraping functionality for various sources:
 - Generic web scraping with Playwright and BeautifulSoup
 - Specialized hiring.cafe scraper for aggregated job listings
+- SimplifyJobs GitHub scraper for new-grad positions
 """
 
 from .scraper import (
@@ -21,6 +22,13 @@ from .hiring_cafe import (
     scrape_hiring_cafe_sync,
 )
 
+from .simplify_jobs import (
+    SimplifyJobsScraper,
+    SimplifyJobsConfig,
+    scrape_simplify_jobs,
+    scrape_simplify_jobs_sync,
+)
+
 __all__ = [
     # Base scraper classes
     "ScrapedJob",
@@ -34,4 +42,9 @@ __all__ = [
     "SearchConfig",
     "scrape_hiring_cafe",
     "scrape_hiring_cafe_sync",
+    # SimplifyJobs GitHub scraper
+    "SimplifyJobsScraper",
+    "SimplifyJobsConfig",
+    "scrape_simplify_jobs",
+    "scrape_simplify_jobs_sync",
 ]

@@ -77,7 +77,7 @@ class JobUpdate(BaseModel):
     is_applied: Optional[bool] = None
     is_pending: Optional[bool] = None
     profile_id: Optional[str] = None
-    resume_version: Optional[int] = None
+    resume_version: Optional[str] = None
 
 
 class ApplyConfirm(BaseModel):
@@ -85,7 +85,7 @@ class ApplyConfirm(BaseModel):
 
     applied: bool
     profile_id: Optional[str] = None
-    resume_version: Optional[int] = None
+    resume_version: Optional[str] = None
 
 
 class ProfileCreate(BaseModel):
@@ -94,6 +94,11 @@ class ProfileCreate(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
+    address_street: Optional[str] = None
+    address_city: Optional[str] = None
+    address_state: Optional[str] = None
+    address_zip: Optional[str] = None
+    address_country: Optional[str] = None
     linkedin_url: Optional[str] = None
     github_url: Optional[str] = None
     portfolio_url: Optional[str] = None
@@ -105,6 +110,11 @@ class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    address_street: Optional[str] = None
+    address_city: Optional[str] = None
+    address_state: Optional[str] = None
+    address_zip: Optional[str] = None
+    address_country: Optional[str] = None
     linkedin_url: Optional[str] = None
     github_url: Optional[str] = None
     portfolio_url: Optional[str] = None
@@ -332,6 +342,11 @@ async def create_profile(profile_data: ProfileCreate):
             name=profile_data.name,
             email=profile_data.email,
             phone=profile_data.phone,
+            address_street=profile_data.address_street,
+            address_city=profile_data.address_city,
+            address_state=profile_data.address_state,
+            address_zip=profile_data.address_zip,
+            address_country=profile_data.address_country,
             linkedin_url=profile_data.linkedin_url,
             github_url=profile_data.github_url,
             portfolio_url=profile_data.portfolio_url,
@@ -359,6 +374,16 @@ async def update_profile(profile_id: str, profile_data: ProfileUpdate):
             profile.email = profile_data.email
         if profile_data.phone is not None:
             profile.phone = profile_data.phone
+        if profile_data.address_street is not None:
+            profile.address_street = profile_data.address_street
+        if profile_data.address_city is not None:
+            profile.address_city = profile_data.address_city
+        if profile_data.address_state is not None:
+            profile.address_state = profile_data.address_state
+        if profile_data.address_zip is not None:
+            profile.address_zip = profile_data.address_zip
+        if profile_data.address_country is not None:
+            profile.address_country = profile_data.address_country
         if profile_data.linkedin_url is not None:
             profile.linkedin_url = profile_data.linkedin_url
         if profile_data.github_url is not None:
