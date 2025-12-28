@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job-Track</title>
+  <style>
+    body {
+      width: 320px;
+      padding: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      background: #1a1a2e;
+      color: #eee;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px 0;
+      color: #4cc9f0;
+      border-bottom: 1px solid #333;
+      padding-bottom: 8px;
+    }
+
+    .section {
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #888;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+
+    .profile-card {
+      background: #16213e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .profile-card:hover {
+      border-color: #4cc9f0;
+      background: #1a2a4e;
+    }
+
+    .profile-card.selected {
+      border-color: #4cc9f0;
+      background: #1a2a4e;
+    }
+
+    .profile-name {
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .profile-email {
+      color: #888;
+      font-size: 12px;
+    }
+
+    .profile-resume {
+      color: #4cc9f0;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 8px;
+    }
+
+    .btn-primary {
+      background: #4cc9f0;
+      color: #1a1a2e;
+    }
+
+    .btn-primary:hover {
+      background: #3db8df;
+    }
+
+    .btn-primary:disabled {
+      background: #333;
+      color: #666;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: #333;
+      color: #eee;
+    }
+
+    .btn-secondary:hover {
+      background: #444;
+    }
+
+    .status {
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+
+    .status-error {
+      background: #5c2424;
+      color: #f88;
+    }
+
+    .status-success {
+      background: #245c24;
+      color: #8f8;
+    }
+
+    .status-info {
+      background: #24345c;
+      color: #88f;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+
+    .server-status {
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+      padding: 8px;
+      border-top: 1px solid #333;
+      margin-top: 12px;
+    }
+
+    .server-status.connected {
+      color: #4c4;
+    }
+
+    .server-status.disconnected {
+      color: #c44;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎯 Job-Track</h1>
+  
+  <div id="status-container"></div>
+
+  <div class="section">
+    <div class="section-title">Select Profile</div>
+    <div id="profiles-container">
+      <div class="empty-state">Loading profiles...</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <button id="autofill-btn" class="btn btn-primary" disabled>
+      Autofill Form
+    </button>
+    <button id="refresh-btn" class="btn btn-secondary">
+      Refresh Profiles
+    </button>
+  </div>
+
+  <div id="server-status" class="server-status">
+    Checking connection...
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
