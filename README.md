@@ -31,6 +31,28 @@ cd job-track
 pip install -r requirements.txt
 ```
 
+Or install as a package:
+```bash
+pip install -e .
+```
+
+## Quick Start
+
+1. **Start the API server** (required for TUI):
+```bash
+./start_api.sh
+```
+
+2. **In a new terminal, start the TUI**:
+```bash
+./start_tui.sh
+```
+
+3. **Or run the example script** to see API usage:
+```bash
+python example_usage.py
+```
+
 ## Usage
 
 ### Starting the API Server

@@ -198,3 +198,9 @@ def scrape_jobs(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+def main():
+    """Entry point for running the API server."""
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
