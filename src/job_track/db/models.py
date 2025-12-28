@@ -251,10 +251,43 @@ def get_engine(db_path: Optional[Path] = None):
     return create_engine(f"sqlite:///{db_path}", echo=False)
 
 
+def _migrate_db(engine):
+    """Run any needed database migrations."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    
+    # Check if profiles table needs address columns
+    if "profiles" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("profiles")]
+        new_columns = [
+            ("address_street", "VARCHAR(255)"),
+            ("address_city", "VARCHAR(100)"),
+            ("address_state", "VARCHAR(100)"),
+            ("address_zip", "VARCHAR(20)"),
+            ("address_country", "VARCHAR(100)"),
+        ]
+        with engine.connect() as conn:
+            for col_name, col_type in new_columns:
+                if col_name not in columns:
+                    conn.execute(text(f"ALTER TABLE profiles ADD COLUMN {col_name} {col_type}"))
+            conn.commit()
+    
+    # Check if jobs table needs posted_at column
+    if "jobs" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("jobs")]
+        with engine.connect() as conn:
+            if "posted_at" not in columns:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN posted_at DATETIME"))
+            # Also handle resume_version type change (was int, now string)
+            conn.commit()
+
+
 def init_db(db_path: Optional[Path] = None):
     """Initialize the database, creating tables if needed."""
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+    _migrate_db(engine)
     return engine
 
 
