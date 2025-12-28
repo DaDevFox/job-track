@@ -12,9 +12,9 @@ from job_track.db.models import init_db
 @pytest.fixture
 def test_client():
     """Create a test client with a temporary database."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        init_db(db_path)
+        engine = init_db(db_path)
 
         # Patch the get_session function to use test database
         import job_track.api.server as server_module
@@ -30,6 +30,7 @@ def test_client():
         yield client
 
         server_module.get_session = original
+        engine.dispose()
 
 
 class TestJobEndpoints:
@@ -206,6 +207,44 @@ class TestProfileEndpoints:
         response = test_client.patch(f"/api/profiles/{profile_id}", json=update_data)
         assert response.status_code == 200
         assert response.json()["phone"] == "+1-555-123-4567"
+
+    def test_create_profile_with_address(self, test_client):
+        """Test creating a profile with address fields."""
+        profile_data = {
+            "name": "Charlie Brown",
+            "email": "charlie@example.com",
+            "address_street": "123 Main St",
+            "address_city": "Springfield",
+            "address_state": "IL",
+            "address_zip": "62701",
+            "address_country": "USA",
+        }
+        response = test_client.post("/api/profiles", json=profile_data)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["name"] == "Charlie Brown"
+        assert data["address_street"] == "123 Main St"
+        assert data["address_city"] == "Springfield"
+        assert data["address_state"] == "IL"
+        assert data["address_zip"] == "62701"
+        assert data["address_country"] == "USA"
+
+    def test_update_profile_address(self, test_client):
+        """Test updating profile address fields."""
+        # Create a profile first
+        profile_data = {"name": "Dan Smith", "email": "dan@example.com"}
+        create_response = test_client.post("/api/profiles", json=profile_data)
+        profile_id = create_response.json()["id"]
+
+        # Update with address
+        update_data = {
+            "address_city": "Boston",
+            "address_state": "MA",
+        }
+        response = test_client.patch(f"/api/profiles/{profile_id}", json=update_data)
+        assert response.status_code == 200
+        assert response.json()["address_city"] == "Boston"
+        assert response.json()["address_state"] == "MA"
 
     def test_delete_profile(self, test_client):
         """Test deleting a profile."""
