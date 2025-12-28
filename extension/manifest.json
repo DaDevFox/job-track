@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "JobTrack Autofill",
+  "version": "0.1.0",
+  "description": "Autofill job applications with local JobTrack profiles and log profile usage.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

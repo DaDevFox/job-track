@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobTrack Profiles</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>JobTrack</h1>
+      <section id="profiles"></section>
+      <div class="actions">
+        <button id="fill" disabled>Fill Form</button>
+        <label class="upload">
+          <span>Upload resume PDF</span>
+          <input id="resume" type="file" accept="application/pdf" />
+        </label>
+      </div>
+      <p id="status"></p>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
