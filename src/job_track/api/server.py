@@ -9,6 +9,7 @@ This server runs on localhost only and provides endpoints for:
 
 import datetime
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -19,10 +20,21 @@ from pydantic import BaseModel
 
 from job_track.db.models import Job, Profile, get_resume_dir, get_session, init_db
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for app startup/shutdown."""
+    # Startup
+    init_db()
+    yield
+    # Shutdown (cleanup if needed)
+
+
 app = FastAPI(
     title="Job-Track API",
     description="Local API for job tracking and application management",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Allow CORS from localhost/browser extension
@@ -104,12 +116,6 @@ class ScrapeRequest(BaseModel):
     urls: list[str]
     filter_new_grad: bool = False
 
-
-# Initialize DB on startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup."""
-    init_db()
 
 
 # Job endpoints
@@ -447,6 +453,67 @@ async def get_resume_path(profile_id: str, version: int):
         }
     finally:
         session.close()
+
+
+# Scrape endpoint
+@app.post("/api/scrape")
+async def scrape_jobs(request: ScrapeRequest):
+    """Trigger a scrape operation for the given URLs.
+
+    This endpoint scrapes job listings from the provided URLs and adds them
+    to the database. It uses simple HTTP scraping for speed.
+    """
+    import httpx
+
+    from job_track.scraper.scraper import SimpleScraper
+
+    scraper = SimpleScraper(filter_new_grad=request.filter_new_grad)
+    session = get_session()
+    results = {"scraped": 0, "added": 0, "skipped": 0, "errors": []}
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            for url in request.urls:
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    html = response.text
+
+                    jobs = scraper.scrape_page(url, html)
+                    results["scraped"] += len(jobs)
+
+                    for scraped_job in jobs:
+                        # Check if job already exists
+                        existing = session.query(Job).filter(
+                            Job.apply_url == scraped_job.apply_url
+                        ).first()
+                        if existing:
+                            results["skipped"] += 1
+                            continue
+
+                        job = Job(
+                            id=scraped_job.generate_id(),
+                            title=scraped_job.title,
+                            company=scraped_job.company,
+                            location=scraped_job.location,
+                            description=scraped_job.description,
+                            apply_url=scraped_job.apply_url,
+                            source_url=scraped_job.source_url,
+                        )
+                        job.set_tags(scraped_job.tags)
+                        session.add(job)
+                        results["added"] += 1
+
+                except httpx.RequestError as e:
+                    results["errors"].append({"url": url, "error": str(e)})
+                except Exception as e:
+                    results["errors"].append({"url": url, "error": str(e)})
+
+        session.commit()
+    finally:
+        session.close()
+
+    return results
 
 
 def run():
