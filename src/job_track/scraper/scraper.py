@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 
 # Playwright is optional - may not be installed in all environments
 try:

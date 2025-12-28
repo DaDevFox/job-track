@@ -117,7 +117,6 @@ class ScrapeRequest(BaseModel):
     filter_new_grad: bool = False
 
 
-
 # Job endpoints
 @app.get("/api/jobs")
 async def list_jobs(
@@ -455,6 +454,62 @@ async def get_resume_path(profile_id: str, version: int):
         session.close()
 
 
+import ipaddress
+import socket
+from urllib.parse import urlparse as url_parse
+
+
+def is_safe_url(url: str) -> bool:
+    """Check if a URL is safe to fetch (not internal network).
+
+    This prevents SSRF attacks by blocking:
+    - Non-HTTP(S) schemes
+    - Localhost and loopback addresses
+    - Private network ranges
+    - Link-local addresses
+
+    Args:
+        url: URL to validate.
+
+    Returns:
+        True if the URL is safe to fetch.
+    """
+    try:
+        parsed = url_parse(url)
+
+        # Only allow HTTP(S)
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        # Get the hostname
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+
+        # Block localhost variations
+        if hostname.lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+
+        # Try to resolve hostname and check IP address
+        try:
+            # Resolve to IP address
+            ip_str = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(ip_str)
+
+            # Block private, loopback, and link-local addresses
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return False
+
+        except (socket.gaierror, ValueError):
+            # If we can't resolve, be cautious but allow
+            # This handles cases where DNS might not be available
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
 # Scrape endpoint
 @app.post("/api/scrape")
 async def scrape_jobs(request: ScrapeRequest):
@@ -475,6 +530,14 @@ async def scrape_jobs(request: ScrapeRequest):
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             for url in request.urls:
                 try:
+                    # Validate URL to prevent SSRF
+                    if not is_safe_url(url):
+                        results["errors"].append({
+                            "url": url,
+                            "error": "URL not allowed (internal or invalid)",
+                        })
+                        continue
+
                     response = await client.get(url)
                     response.raise_for_status()
                     html = response.text

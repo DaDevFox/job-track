@@ -18,8 +18,6 @@ from pathlib import Path
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import httpx
-
 
 def test_simple_scrape(url: str, filter_new_grad: bool = False) -> None:
     """Test simple HTTP scraping (no JavaScript rendering).
@@ -28,6 +26,8 @@ def test_simple_scrape(url: str, filter_new_grad: bool = False) -> None:
         url: URL to scrape.
         filter_new_grad: Whether to filter for new-grad positions.
     """
+    import httpx
+
     from job_track.scraper.scraper import SimpleScraper
 
     print(f"\n🔍 Simple scraping: {url}")

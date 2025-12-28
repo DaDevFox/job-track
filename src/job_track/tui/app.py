@@ -425,9 +425,9 @@ class JobTrackApp(App):
             if new_grad_filter:
                 query = query.filter(Job.tags.contains('"new-grad"'))
             if applied_filter:
-                query = query.filter(Job.is_applied == True)  # noqa: E712
+                query = query.filter(Job.is_applied.is_(True))
             if pending_filter:
-                query = query.filter(Job.is_pending == True)  # noqa: E712
+                query = query.filter(Job.is_pending.is_(True))
             if search_input:
                 term = f"%{search_input}%"
                 query = query.filter(

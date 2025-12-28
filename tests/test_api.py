@@ -221,3 +221,51 @@ class TestProfileEndpoints:
         # Verify it's deleted
         get_response = test_client.get(f"/api/profiles/{profile_id}")
         assert get_response.status_code == 404
+
+
+class TestUrlValidation:
+    """Tests for URL validation (SSRF prevention)."""
+
+    def test_is_safe_url_blocks_localhost(self):
+        """Test that localhost URLs are blocked."""
+        from job_track.api.server import is_safe_url
+
+        assert not is_safe_url("http://localhost/test")
+        assert not is_safe_url("http://127.0.0.1/test")
+        assert not is_safe_url("http://127.0.0.1:8080/test")
+        assert not is_safe_url("http://0.0.0.0/test")
+
+    def test_is_safe_url_blocks_non_http(self):
+        """Test that non-HTTP schemes are blocked."""
+        from job_track.api.server import is_safe_url
+
+        assert not is_safe_url("file:///etc/passwd")
+        assert not is_safe_url("ftp://example.com")
+        assert not is_safe_url("gopher://example.com")
+
+    def test_is_safe_url_allows_public_urls(self):
+        """Test that public HTTP URLs are allowed."""
+        from job_track.api.server import is_safe_url
+
+        # Note: These may fail if DNS doesn't resolve
+        # but the function should handle that gracefully
+        assert is_safe_url("https://example.com/careers")
+        assert is_safe_url("https://google.com/jobs")
+
+
+class TestScrapeEndpoint:
+    """Tests for the scrape endpoint."""
+
+    def test_scrape_blocks_internal_urls(self, test_client):
+        """Test that internal URLs are blocked in scrape requests."""
+        response = test_client.post(
+            "/api/scrape",
+            json={"urls": ["http://localhost/internal", "http://127.0.0.1/api"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # All URLs should be blocked
+        assert data["scraped"] == 0
+        assert data["added"] == 0
+        assert len(data["errors"]) == 2
+        assert "not allowed" in data["errors"][0]["error"]
