@@ -2253,9 +2253,10 @@ class JobTrackApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
-        Binding("enter", "open_job", "Open/Apply"),
+        Binding("enter", "open_link", "Open Link"),
         Binding("d", "view_details", "Details"),
-        Binding("a", "mark_applied", "Mark Applied"),
+        Binding("a", "context_action_a", "Apply/Add"),
+        Binding("x", "remove_selected", "Remove"),
         Binding("p", "select_profile", "Profiles"),
         Binding("n", "add_profile", "New Profile"),
         Binding("f", "toggle_filter", "Toggle Filters"),
@@ -2324,7 +2325,7 @@ class JobTrackApp(App):
                     with Horizontal(id="settings-actions"):
                         yield Button("Edit Settings", id="edit-settings-btn", variant="primary")
                         yield Button("Manage Sources", id="manage-sources-btn", variant="success")
-        yield Static("Ready | 's' scrape, 'c' hiring.cafe, 'g' settings, 'h/l' switch tabs, 't' focus table", id="status-bar")
+        yield Static("", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2349,6 +2350,31 @@ class JobTrackApp(App):
         
         # Focus the job table for immediate navigation with j/k
         table.focus()
+        
+        # Set initial status bar
+        self.update_status_bar_for_tab("jobs-tab")
+
+    @on(TabbedContent.TabActivated)
+    def tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Handle tab change - update status bar."""
+        self.update_status_bar_for_tab(str(event.pane.id))
+
+    def update_status_bar_for_tab(self, tab_id: str) -> None:
+        """Update status bar with context-sensitive keybindings."""
+        common = "h/l tabs | t focus | q quit"
+        
+        if tab_id == "jobs-tab":
+            hints = "enter open | a mark applied | d details | s scrape | c hiring.cafe | f filter | / search"
+        elif tab_id == "history-tab":
+            hints = "enter open | a add application | x remove | d details"
+        elif tab_id == "profiles-tab":
+            hints = "n new profile | enter select | p switch profile"
+        elif tab_id == "settings-tab":
+            hints = "g edit settings | s manage sources"
+        else:
+            hints = "r refresh"
+        
+        self.query_one("#status-bar", Static).update(f"{hints} | {common}")
 
     def refresh_settings_summary(self) -> None:
         """Refresh the settings summary display."""
@@ -2745,18 +2771,22 @@ class JobTrackApp(App):
     def action_switch_tab_jobs(self) -> None:
         """Switch to jobs tab."""
         self.query_one(TabbedContent).active = "jobs-tab"
+        self.update_status_bar_for_tab("jobs-tab")
 
     def action_switch_tab_history(self) -> None:
         """Switch to history tab."""
         self.query_one(TabbedContent).active = "history-tab"
+        self.update_status_bar_for_tab("history-tab")
 
     def action_switch_tab_profiles(self) -> None:
         """Switch to profiles tab."""
         self.query_one(TabbedContent).active = "profiles-tab"
+        self.update_status_bar_for_tab("profiles-tab")
 
     def action_switch_tab_settings(self) -> None:
         """Switch to settings tab."""
         self.query_one(TabbedContent).active = "settings-tab"
+        self.update_status_bar_for_tab("settings-tab")
 
     def action_tab_left(self) -> None:
         """Switch to previous tab (vi-like h or left arrow)."""
@@ -2766,8 +2796,10 @@ class JobTrackApp(App):
             current_idx = tab_order.index(tabs.active)
             new_idx = (current_idx - 1) % len(tab_order)
             tabs.active = tab_order[new_idx]
+            self.update_status_bar_for_tab(tab_order[new_idx])
         except ValueError:
             tabs.active = "jobs-tab"
+            self.update_status_bar_for_tab("jobs-tab")
 
     def action_tab_right(self) -> None:
         """Switch to next tab (vi-like l or right arrow)."""
@@ -2777,8 +2809,10 @@ class JobTrackApp(App):
             current_idx = tab_order.index(tabs.active)
             new_idx = (current_idx + 1) % len(tab_order)
             tabs.active = tab_order[new_idx]
+            self.update_status_bar_for_tab(tab_order[new_idx])
         except ValueError:
             tabs.active = "jobs-tab"
+            self.update_status_bar_for_tab("jobs-tab")
 
     def action_focus_table(self) -> None:
         """Focus on the main table of the current tab."""
@@ -2798,6 +2832,56 @@ class JobTrackApp(App):
                 pass
         except Exception:
             pass
+
+    def action_open_link(self) -> None:
+        """Open link - context aware based on current tab."""
+        tabs = self.query_one(TabbedContent)
+        if tabs.active == "jobs-tab":
+            self.action_open_job()
+        elif tabs.active == "history-tab":
+            job = self.get_selected_applied_job()
+            if job and job.get("apply_url"):
+                webbrowser.open(job["apply_url"])
+                self.update_status(f"Opened: {job['title']}")
+
+    def action_context_action_a(self) -> None:
+        """Context-aware 'a' action - mark applied on jobs, add application on history."""
+        tabs = self.query_one(TabbedContent)
+        if tabs.active == "jobs-tab":
+            self.action_mark_applied()
+        elif tabs.active == "history-tab":
+            self.action_add_application()
+
+    def action_add_application(self) -> None:
+        """Add a new application manually."""
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_history()
+                self.update_status("Application added")
+        self.push_screen(AddApplicationScreen(), on_result)
+
+    def action_remove_selected(self) -> None:
+        """Remove selected item - context aware based on current tab."""
+        tabs = self.query_one(TabbedContent)
+        if tabs.active == "history-tab":
+            job = self.get_selected_applied_job()
+            if not job:
+                self.update_status("No application selected")
+                return
+            
+            session = get_session()
+            try:
+                db_job = session.query(Job).filter(Job.id == job["id"]).first()
+                if db_job:
+                    db_job.is_applied = False
+                    db_job.applied_at = None
+                    db_job.profile_id = None
+                    session.commit()
+                    self.refresh_history()
+                    self.refresh_jobs()
+                    self.update_status(f"Removed application: {job['title']}")
+            finally:
+                session.close()
 
     def action_open_job(self) -> None:
         """Open job link in browser and mark as pending."""
