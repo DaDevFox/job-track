@@ -177,7 +177,10 @@ const WORKDAY_AUTOMATION_IDS = {
     // -- delimiter
     "address--region",
     "address--state",
+    "address--countryRegion",
     "addressSection--state",
+    "addressSection_countryRegion",
+    "addressSection--region",
     // Section_ delimiter
     "addressSection_region",
     "addressSection_state",
@@ -202,11 +205,9 @@ const WORKDAY_AUTOMATION_IDS = {
   ],
   country: [
     // -- delimiter
-    "address--countryRegion",
     "address--country",
     "addressSection--country",
     // Section_ delimiter
-    "addressSection_countryRegion",
     "addressSection_country",
     // Simple patterns
     "country",
@@ -225,6 +226,7 @@ const WORKDAY_AUTOMATION_IDS = {
     // -- delimiter
     "phone--deviceType",
     "phone--type",
+    "phoneNumber--phoneType",
     // Section_ delimiter
     "phoneSection_deviceType",
     // Simple patterns
@@ -377,7 +379,7 @@ function fillField(element, value) {
   try {
     // Focus the element first
     element.focus();
-    
+
     // Clear any existing value first
     element.value = "";
 
@@ -426,10 +428,10 @@ function fillField(element, value) {
     setTimeout(() => {
       // Re-focus and simulate user interaction
       element.focus();
-      
+
       // Dispatch focusin event (some React versions use this)
       element.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-      
+
       // Re-dispatch input event to ensure React state updates
       const inputEvent2 = new InputEvent("input", {
         bubbles: true,
@@ -438,7 +440,7 @@ function fillField(element, value) {
         data: value,
       });
       element.dispatchEvent(inputEvent2);
-      
+
       // Trigger blur and focusout for validation
       element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
       element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
@@ -459,47 +461,53 @@ function fillField(element, value) {
  */
 function simulateTyping(element, value) {
   if (!value || !element) return false;
-  
+
   try {
     element.focus();
     element.value = "";
-    
+
     for (let i = 0; i < value.length; i++) {
       const char = value[i];
-      
+
       // Dispatch keydown
-      element.dispatchEvent(new KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        key: char,
-        code: `Key${char.toUpperCase()}`,
-      }));
-      
+      element.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          key: char,
+          code: `Key${char.toUpperCase()}`,
+        })
+      );
+
       // Append character to value
       element.value += char;
-      
+
       // Dispatch input event for this character
-      element.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        cancelable: true,
-        inputType: "insertText",
-        data: char,
-      }));
-      
+      element.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: char,
+        })
+      );
+
       // Dispatch keyup
-      element.dispatchEvent(new KeyboardEvent("keyup", {
-        bubbles: true,
-        cancelable: true,
-        key: char,
-        code: `Key${char.toUpperCase()}`,
-      }));
+      element.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          bubbles: true,
+          cancelable: true,
+          key: char,
+          code: `Key${char.toUpperCase()}`,
+        })
+      );
     }
-    
+
     // Final change and blur events
     element.dispatchEvent(new Event("change", { bubbles: true }));
     element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
     element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    
+
     return true;
   } catch (e) {
     console.error("Job-Track: Error simulating typing", e);
@@ -508,77 +516,340 @@ function simulateTyping(element, value) {
 }
 
 /**
+ * US State abbreviation to full name mapping (two-way).
+ */
+const US_STATES = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District of Columbia",
+  // Territories
+  PR: "Puerto Rico",
+  VI: "Virgin Islands",
+  GU: "Guam",
+  AS: "American Samoa",
+  MP: "Northern Mariana Islands",
+};
+
+// Create reverse mapping (full name -> abbreviation)
+const US_STATES_REVERSE = Object.fromEntries(
+  Object.entries(US_STATES).map(([abbr, name]) => [name.toLowerCase(), abbr])
+);
+
+/**
+ * Get all possible variations of a state name for matching.
+ * @param {string} state - State name or abbreviation.
+ * @returns {string[]} - Array of possible values to match against.
+ */
+function getStateVariations(state) {
+  if (!state) return [];
+  const trimmed = state.trim();
+  const upper = trimmed.toUpperCase();
+  const lower = trimmed.toLowerCase();
+
+  const variations = [trimmed, upper, lower];
+
+  // If it's an abbreviation, add the full name
+  if (US_STATES[upper]) {
+    variations.push(US_STATES[upper]);
+    variations.push(US_STATES[upper].toLowerCase());
+  }
+
+  // If it's a full name, add the abbreviation
+  if (US_STATES_REVERSE[lower]) {
+    variations.push(US_STATES_REVERSE[lower]);
+    variations.push(US_STATES_REVERSE[lower].toLowerCase());
+  }
+
+  return [...new Set(variations)];
+}
+
+/**
+ * Common device type variations for matching.
+ */
+const DEVICE_TYPE_VARIATIONS = {
+  mobile: ["mobile", "cell", "cellular", "mobile phone", "cell phone"],
+  home: ["home", "home phone", "landline", "residence"],
+  work: ["work", "work phone", "office", "business"],
+};
+
+/**
+ * Get all possible variations of a device type for matching.
+ * @param {string} deviceType - Device type value.
+ * @returns {string[]} - Array of possible values to match against.
+ */
+function getDeviceTypeVariations(deviceType) {
+  if (!deviceType) return [];
+  const lower = deviceType.toLowerCase().trim();
+
+  // Check if it matches any known type
+  for (const [key, variations] of Object.entries(DEVICE_TYPE_VARIATIONS)) {
+    if (variations.includes(lower) || key === lower) {
+      return variations;
+    }
+  }
+
+  // Return the original value in different cases
+  return [deviceType.trim(), lower, deviceType.trim().toUpperCase()];
+}
+
+/**
+ * Try to match a value against dropdown options with various strategies.
+ * @param {Array} options - Array of option elements or {value, text} objects.
+ * @param {string} value - Value to match.
+ * @param {string} fieldType - Type of field ('state', 'deviceType', 'country', or 'default').
+ * @returns {Object|null} - Matching option or null.
+ */
+function findDropdownMatch(options, value, fieldType = "default") {
+  if (!value || !options.length) return null;
+
+  const valueTrimmed = value.trim();
+  const valueLower = valueTrimmed.toLowerCase();
+
+  // Get variations based on field type
+  let variations = [valueTrimmed, valueLower];
+  if (fieldType === "state") {
+    variations = getStateVariations(value);
+  } else if (fieldType === "deviceType") {
+    variations = getDeviceTypeVariations(value);
+  }
+
+  // Strategy 1: Exact match (case-insensitive, trimmed)
+  for (const opt of options) {
+    const optValue = (opt.value || "").trim().toLowerCase();
+    const optText = (opt.text || opt.textContent || "").trim().toLowerCase();
+
+    for (const v of variations) {
+      const vLower = v.toLowerCase();
+      if (optValue === vLower || optText === vLower) {
+        return opt;
+      }
+    }
+  }
+
+  // Strategy 2: Option starts with or contains our value
+  for (const opt of options) {
+    const optText = (opt.text || opt.textContent || "").trim().toLowerCase();
+
+    for (const v of variations) {
+      const vLower = v.toLowerCase();
+      if (optText.startsWith(vLower) || optText.includes(vLower)) {
+        return opt;
+      }
+    }
+  }
+
+  // Strategy 3: Our value starts with or contains option text
+  for (const opt of options) {
+    const optText = (opt.text || opt.textContent || "").trim().toLowerCase();
+    if (optText.length < 2) continue; // Skip very short options
+
+    for (const v of variations) {
+      const vLower = v.toLowerCase();
+      if (vLower.startsWith(optText) || vLower.includes(optText)) {
+        return opt;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Fill a dropdown/select element by finding and selecting a matching option.
  * Supports both native select elements and Workday's custom dropdowns.
  * @param {HTMLElement} element - The dropdown container or select element.
  * @param {string} value - The value to select (will match against option text or value).
+ * @param {string} fieldType - Type of field for smart matching ('state', 'deviceType', 'country', 'default').
  * @returns {boolean} - Whether the fill was successful.
  */
-function fillDropdown(element, value) {
+function fillDropdown(element, value, fieldType = "default") {
   if (!value || !element) return false;
-  
+
   try {
-    const valueLower = value.toLowerCase().trim();
-    
     // Native <select> element
-    if (element.tagName === 'SELECT') {
+    if (element.tagName === "SELECT") {
       const options = Array.from(element.options);
-      const match = options.find(opt => 
-        opt.value.toLowerCase() === valueLower ||
-        opt.text.toLowerCase() === valueLower ||
-        opt.text.toLowerCase().includes(valueLower) ||
-        valueLower.includes(opt.text.toLowerCase())
-      );
-      
+      const match = findDropdownMatch(options, value, fieldType);
+
       if (match) {
         element.value = match.value;
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+        element.dispatchEvent(new Event("input", { bubbles: true }));
         return true;
       }
       return false;
     }
-    
-    // Workday custom dropdown - click to open, then find and click option
-    // First, find and click the dropdown trigger
-    const dropdownTrigger = element.querySelector('button, [role="combobox"], [aria-haspopup]') || element;
-    dropdownTrigger.click();
-    
-    // Wait for dropdown to open and find options
-    setTimeout(() => {
-      // Look for dropdown options in various places
+
+    // Workday custom dropdown - these are button-based with popup lists
+    // Find the button trigger
+    let dropdownButton = element;
+    if (element.tagName !== "BUTTON") {
+      dropdownButton = element.querySelector("button") || element;
+    }
+
+    console.log("Job-Track: Clicking dropdown button:", dropdownButton);
+
+    // Click to open the dropdown - use full mouse event sequence for React/Workday
+    // Based on reference implementation that works with Workday
+    dropdownButton.focus();
+
+    // Full event sequence: pointerdown -> mousedown -> focus -> mouseup -> click
+    ["pointerdown", "mousedown"].forEach((eventType) => {
+      dropdownButton.dispatchEvent(
+        new MouseEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        })
+      );
+    });
+    dropdownButton.focus();
+    ["mouseup", "click"].forEach((eventType) => {
+      dropdownButton.dispatchEvent(
+        new MouseEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        })
+      );
+    });
+
+    // Need to wait for Workday's popup to render (it's async)
+    // Use multiple attempts with increasing delays
+    const attemptSelectOption = (attemptNum) => {
+      if (attemptNum > 6) {
+        console.log(
+          "Job-Track: Failed to find dropdown options after 6 attempts"
+        );
+        document.body.click(); // Close dropdown
+        return;
+      }
+
+      // Workday renders dropdown popups at the document level
+      // Look for the popup listbox that just appeared
       const optionSelectors = [
         '[role="option"]',
-        '[role="listbox"] [role="option"]',
+        '[data-automation-id="promptOption"]',
+        '[data-automation-id*="promptOption"]',
         '[data-automation-id*="option"]',
-        '.option',
-        'li',
+        '[data-automation-id*="menuItem"]',
+        'li[role="option"]',
+        'div[role="option"]',
+        ".WDJT_option",
+        '[aria-selected][role="option"]',
+        '[id*="option"][role="option"]',
+        '[role="listbox"] [role="option"]',
+        '[data-automation-widget="wd-popup"] li',
+        'ul[role="listbox"] li',
       ];
-      
+
       let options = [];
       for (const selector of optionSelectors) {
-        // Check both within element and in document (Workday often renders dropdowns at body level)
         options = Array.from(document.querySelectorAll(selector));
-        if (options.length > 0) break;
+        // Filter to only visible options with content
+        options = options.filter((opt) => {
+          const rect = opt.getBoundingClientRect();
+          const hasContent = (opt.textContent || "").trim().length > 0;
+          return rect.width > 0 && rect.height > 0 && hasContent;
+        });
+        if (options.length > 0) {
+          console.log(
+            `Job-Track: Found ${options.length} options with selector: ${selector}`
+          );
+          break;
+        }
       }
-      
-      // Find matching option
-      const match = options.find(opt => {
-        const text = (opt.textContent || '').toLowerCase().trim();
-        return text === valueLower || 
-               text.includes(valueLower) || 
-               valueLower.includes(text);
-      });
-      
+
+      if (options.length === 0) {
+        // Retry after increasing delay
+        const delay = 200 + attemptNum * 80;
+        console.log(
+          `Job-Track: No options found, retrying in ${delay}ms (attempt ${attemptNum})...`
+        );
+        setTimeout(() => attemptSelectOption(attemptNum + 1), delay);
+        return;
+      }
+
+      // Find matching option using smart matching
+      const match = findDropdownMatch(options, value, fieldType);
+
       if (match) {
-        match.click();
-        return true;
+        console.log(
+          `Job-Track: Found matching option for "${value}":`,
+          match.textContent?.trim()
+        );
+
+        // More robust event sequence for React/Workday (from reference implementation)
+        ["pointerover", "pointerdown", "mousedown", "mouseup", "click"].forEach(
+          (eventType) => {
+            match.dispatchEvent(new MouseEvent(eventType, { bubbles: true }));
+          }
+        );
+        match.dispatchEvent(new Event("change", { bubbles: true }));
       } else {
-        // Close dropdown if no match found
-        document.body.click();
+        console.log(
+          `Job-Track: No match found for "${value}" in ${options.length} options`
+        );
+        // Log available options for debugging
+        const availableOptions = options
+          .slice(0, 10)
+          .map((o) => o.textContent?.trim());
+        console.log("Job-Track: Available options:", availableOptions);
+        document.body.click(); // Close dropdown
       }
-    }, 100);
-    
+    };
+
+    // Start attempting to find options after initial delay (300ms to allow popup to render)
+    setTimeout(() => attemptSelectOption(1), 300);
+
     return true; // Return true optimistically since actual click happens async
   } catch (e) {
     console.error("Job-Track: Error filling dropdown", e);
@@ -590,37 +861,80 @@ function fillDropdown(element, value) {
  * Find and fill a Workday dropdown by automation ID.
  * @param {string[]} automationIds - List of automation IDs to search for.
  * @param {string} value - Value to select.
+ * @param {string} fieldType - Type of field for smart matching ('state', 'deviceType', 'country', 'default').
  * @returns {boolean}
  */
-function fillWorkdayDropdown(automationIds, value) {
+function fillWorkdayDropdown(automationIds, value, fieldType = "default") {
   if (!value) return false;
-  
+
+  console.log(
+    `Job-Track: Attempting to fill dropdown for ${fieldType} with value "${value}"`
+  );
+  console.log(
+    `Job-Track: Looking for automation IDs:`,
+    automationIds.slice(0, 5)
+  );
+
   for (const id of automationIds) {
-    // Look for dropdown container with this automation ID
-    let container = document.querySelector(`[data-automation-id="${id}"]`);
-    if (!container) {
-      container = document.querySelector(`[data-automation-id*="${id}"]`);
+    // Look for dropdown container or button with this automation ID
+    let element = document.querySelector(`[data-automation-id="${id}"]`);
+    if (!element) {
+      element = document.querySelector(`[data-automation-id*="${id}"]`);
     }
-    
-    if (container) {
-      // Find the actual dropdown trigger or select within
-      const select = container.querySelector('select');
+    if (!element) {
+      element = document.querySelector(`[id="${id}"]`);
+    }
+
+    if (element) {
+      console.log(
+        `Job-Track: Found element with automation-id containing "${id}":`,
+        element.tagName
+      );
+
+      // If the element is a button, it's the dropdown trigger itself
+      if (element.tagName === "BUTTON") {
+        return fillDropdown(element, value, fieldType);
+      }
+
+      // If it's a select, fill it directly
+      if (element.tagName === "SELECT") {
+        return fillDropdown(element, value, fieldType);
+      }
+
+      // Look for select inside the container
+      const select = element.querySelector("select");
       if (select) {
-        return fillDropdown(select, value);
+        return fillDropdown(select, value, fieldType);
       }
-      
-      // Workday custom dropdown
-      const dropdown = container.querySelector('[role="combobox"], [role="listbox"], button, [aria-haspopup]');
-      if (dropdown) {
-        return fillDropdown(container, value);
+
+      // Look for a button inside (Workday custom dropdown)
+      const button = element.querySelector("button");
+      if (button) {
+        return fillDropdown(button, value, fieldType);
       }
-      
-      // Container itself might be the dropdown
-      if (container.getAttribute('role') === 'combobox' || container.getAttribute('aria-haspopup')) {
-        return fillDropdown(container, value);
+
+      // Look for combobox role elements
+      const combobox = element.querySelector(
+        '[role="combobox"], [aria-haspopup="listbox"]'
+      );
+      if (combobox) {
+        return fillDropdown(combobox, value, fieldType);
       }
+
+      // Container itself might be clickable
+      if (
+        element.getAttribute("role") === "combobox" ||
+        element.getAttribute("aria-haspopup")
+      ) {
+        return fillDropdown(element, value, fieldType);
+      }
+
+      // Last resort: try filling the container itself
+      return fillDropdown(element, value, fieldType);
     }
   }
+
+  console.log(`Job-Track: No element found for automation IDs:`, automationIds);
   return false;
 }
 
@@ -700,26 +1014,35 @@ function autofillWorkday(profile) {
       }
     }
   }
-  
+
   // Handle dropdown fields (phone device type, state, country)
   const dropdownMappings = [
     {
       automationIds: WORKDAY_AUTOMATION_IDS.phoneDeviceType,
       value: profile.phone_device_type || "Mobile",
+      fieldType: "deviceType",
     },
     {
       automationIds: WORKDAY_AUTOMATION_IDS.state,
       value: profile.address_state || profile.state,
+      fieldType: "state",
     },
     {
       automationIds: WORKDAY_AUTOMATION_IDS.country,
       value: profile.address_country || profile.country,
+      fieldType: "country",
     },
   ];
-  
+
   for (const mapping of dropdownMappings) {
     if (mapping.value) {
-      if (fillWorkdayDropdown(mapping.automationIds, mapping.value)) {
+      if (
+        fillWorkdayDropdown(
+          mapping.automationIds,
+          mapping.value,
+          mapping.fieldType
+        )
+      ) {
         filledCount++;
       }
     }
@@ -790,8 +1113,8 @@ function autofillForm(profile) {
     } else if (matchesPatterns(field, FIELD_PATTERNS.phoneDeviceType)) {
       // Phone device type - try to fill dropdown or text field
       const deviceType = profile.phone_device_type || "Mobile";
-      if (field.tagName === 'SELECT') {
-        filled = fillDropdown(field, deviceType);
+      if (field.tagName === "SELECT") {
+        filled = fillDropdown(field, deviceType, "deviceType");
       } else {
         filled = fillField(field, deviceType);
       }
@@ -810,8 +1133,8 @@ function autofillForm(profile) {
     } else if (matchesPatterns(field, FIELD_PATTERNS.state)) {
       // State might be a dropdown
       const stateValue = profile.address_state || profile.state;
-      if (field.tagName === 'SELECT') {
-        filled = fillDropdown(field, stateValue);
+      if (field.tagName === "SELECT") {
+        filled = fillDropdown(field, stateValue, "state");
       } else {
         filled = fillField(field, stateValue);
       }
@@ -824,28 +1147,42 @@ function autofillForm(profile) {
       filledElements.add(field);
     }
   });
-  
+
   // Also try to fill any dropdown elements for country/state
-  const dropdowns = document.querySelectorAll('select');
-  dropdowns.forEach(select => {
+  const dropdowns = document.querySelectorAll("select");
+  dropdowns.forEach((select) => {
     if (filledElements.has(select)) return;
     if (select.value && select.value.trim()) return;
-    
+
     const selectText = [
-      select.name || '',
-      select.id || '',
-      select.getAttribute('aria-label') || '',
-    ].join(' ').toLowerCase();
-    
+      select.name || "",
+      select.id || "",
+      select.getAttribute("aria-label") || "",
+    ]
+      .join(" ")
+      .toLowerCase();
+
     let filled = false;
     if (/country/i.test(selectText)) {
-      filled = fillDropdown(select, profile.address_country || profile.country);
+      filled = fillDropdown(
+        select,
+        profile.address_country || profile.country,
+        "country"
+      );
     } else if (/state|region|province/i.test(selectText)) {
-      filled = fillDropdown(select, profile.address_state || profile.state);
+      filled = fillDropdown(
+        select,
+        profile.address_state || profile.state,
+        "state"
+      );
     } else if (/device.?type|phone.?type/i.test(selectText)) {
-      filled = fillDropdown(select, profile.phone_device_type || "Mobile");
+      filled = fillDropdown(
+        select,
+        profile.phone_device_type || "Mobile",
+        "deviceType"
+      );
     }
-    
+
     if (filled) {
       filledCount++;
       filledElements.add(select);
@@ -871,30 +1208,32 @@ function autofillForm(profile) {
 function triggerFormValidation() {
   setTimeout(() => {
     // Find all filled inputs and re-trigger their validation
-    const inputs = document.querySelectorAll('input, textarea');
-    inputs.forEach(input => {
+    const inputs = document.querySelectorAll("input, textarea");
+    inputs.forEach((input) => {
       if (input.value && input.value.trim()) {
         // Dispatch events to trigger React's validation
         input.dispatchEvent(new FocusEvent("focus", { bubbles: true }));
-        input.dispatchEvent(new InputEvent("input", {
-          bubbles: true,
-          cancelable: true,
-          inputType: "insertText",
-          data: input.value,
-        }));
+        input.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            cancelable: true,
+            inputType: "insertText",
+            data: input.value,
+          })
+        );
         input.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
         input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
       }
     });
-    
+
     // Click somewhere neutral to trigger any pending validations
     // Workday often validates on clicking outside the form field
     const body = document.body;
     body.click();
-    
+
     // Also try triggering validation on any visible form
-    const forms = document.querySelectorAll('form');
-    forms.forEach(form => {
+    const forms = document.querySelectorAll("form");
+    forms.forEach((form) => {
       // Don't submit, just trigger validation events
       form.dispatchEvent(new Event("input", { bubbles: true }));
       form.dispatchEvent(new Event("change", { bubbles: true }));
