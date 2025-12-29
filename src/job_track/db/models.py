@@ -246,8 +246,7 @@ class Profile(Base):
         first_name: User's first name.
         last_name: User's last name.
         email: Email address.
-        phone: Phone number.
-        address_street: Street address.
+        phone: Phone number.        phone_device_type: Phone device type (e.g., "Mobile", "Home", "Work").        address_street: Street address.
         address_city: City.
         address_state: State/Province.
         address_zip: ZIP/Postal code.
@@ -268,6 +267,7 @@ class Profile(Base):
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    phone_device_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # e.g., "Mobile", "Home", "Work"
     address_street: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     address_city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     address_state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -370,6 +370,7 @@ class Profile(Base):
             "full_name": self.get_full_name(),
             "email": self.email,
             "phone": self.phone,
+            "phone_device_type": self.phone_device_type,
             "address_street": self.address_street,
             "address_city": self.address_city,
             "address_state": self.address_state,
@@ -437,6 +438,7 @@ def _migrate_db(engine):
             ("address_state", "VARCHAR(100)"),
             ("address_zip", "VARCHAR(20)"),
             ("address_country", "VARCHAR(100)"),
+            ("phone_device_type", "VARCHAR(20)"),
         ]
         with engine.connect() as conn:
             for col_name, col_type in new_columns:

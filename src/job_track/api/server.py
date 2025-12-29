@@ -106,6 +106,7 @@ class ProfileCreate(BaseModel):
     last_name: str
     email: str
     phone: Optional[str] = None
+    phone_device_type: Optional[str] = None  # e.g., "Mobile", "Home", "Work"
     address_street: Optional[str] = None
     address_city: Optional[str] = None
     address_state: Optional[str] = None
@@ -124,6 +125,7 @@ class ProfileUpdate(BaseModel):
     last_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    phone_device_type: Optional[str] = None  # e.g., "Mobile", "Home", "Work"
     address_street: Optional[str] = None
     address_city: Optional[str] = None
     address_state: Optional[str] = None

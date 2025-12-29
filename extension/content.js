@@ -45,14 +45,30 @@ const FIELD_PATTERNS = {
   ],
   email: [/e?.?mail/i, /email.?address/i, /emailAddress/i],
   phone: [
-    /phone/i,
+    /^phone$/i,
+    /phoneNumber/i,
+    /phone-number/i,
+    /phone--phoneNumber/i,
+    /phone--number/i,
     /mobile/i,
     /telephone/i,
     /cell/i,
     /contact.?number/i,
-    /phoneNumber/i,
-    /phone-number/i,
-    /deviceType-/i,
+  ],
+  // Patterns to EXCLUDE from phone number filling (phone extension fields)
+  phoneExtension: [
+    /extension/i,
+    /ext\.?$/i,
+    /phone.*ext/i,
+    /phoneExtension/i,
+    /phone--extension/i,
+  ],
+  phoneDeviceType: [
+    /device.?type/i,
+    /phone.?type/i,
+    /phoneDeviceType/i,
+    /phone--deviceType/i,
+    /deviceType/i,
   ],
   linkedin: [/linkedin/i, /linked.?in/i],
   github: [/github/i, /git.?hub/i],
@@ -205,6 +221,24 @@ const WORKDAY_AUTOMATION_IDS = {
     "socialLinks--linkedin",
     "formField-linkedin",
   ],
+  phoneDeviceType: [
+    // -- delimiter
+    "phone--deviceType",
+    "phone--type",
+    // Section_ delimiter
+    "phoneSection_deviceType",
+    // Simple patterns
+    "phoneDeviceType",
+    "deviceType",
+    "phone-device-type",
+  ],
+  // Phone extension - we want to find but NOT fill these
+  phoneExtension: [
+    "phone--extension",
+    "phoneSection_extension",
+    "phoneExtension",
+    "extension",
+  ],
 };
 
 /**
@@ -341,8 +375,11 @@ function fillField(element, value) {
   if (!value || !element) return false;
 
   try {
-    // Focus the element
+    // Focus the element first
     element.focus();
+    
+    // Clear any existing value first
+    element.value = "";
 
     // For React apps (including Workday), we need to use the native value setter
     // to bypass React's synthetic event system
@@ -355,6 +392,7 @@ function fillField(element, value) {
       "value"
     )?.set;
 
+    // Set the value using native setter
     if (element.tagName === "INPUT" && nativeInputValueSetter) {
       nativeInputValueSetter.call(element, value);
     } else if (element.tagName === "TEXTAREA" && nativeTextAreaValueSetter) {
@@ -363,48 +401,227 @@ function fillField(element, value) {
       element.value = value;
     }
 
-    // Trigger a comprehensive set of events to ensure React/Workday picks up the change
-    // Input event - primary event for React
-    const inputEvent = new Event("input", { bubbles: true, cancelable: true });
+    // Create and dispatch InputEvent - this is what React listens for
+    // The key is using InputEvent (not Event) with inputType specified
+    const inputEvent = new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: value,
+    });
     element.dispatchEvent(inputEvent);
 
-    // Change event
+    // Also dispatch a change event
     const changeEvent = new Event("change", {
       bubbles: true,
       cancelable: true,
     });
     element.dispatchEvent(changeEvent);
 
-    // Keyboard events for apps that listen to keystrokes
-    element.dispatchEvent(
-      new KeyboardEvent("keydown", { bubbles: true, key: "a" })
-    );
-    element.dispatchEvent(
-      new KeyboardEvent("keypress", { bubbles: true, key: "a" })
-    );
-    element.dispatchEvent(
-      new KeyboardEvent("keyup", { bubbles: true, key: "a" })
-    );
+    // Dispatch blur event to trigger validation
+    element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
 
-    // Some frameworks need compositionend event
-    element.dispatchEvent(
-      new CompositionEvent("compositionend", { bubbles: true, data: value })
-    );
-
-    // Blur to trigger validation
-    element.blur();
-
-    // Focus again briefly for Workday's validation
+    // For Workday specifically, we need to trigger React's internal handlers
+    // by simulating the full focus/input/blur cycle after a small delay
     setTimeout(() => {
+      // Re-focus and simulate user interaction
       element.focus();
-      element.blur();
-    }, 50);
+      
+      // Dispatch focusin event (some React versions use this)
+      element.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      
+      // Re-dispatch input event to ensure React state updates
+      const inputEvent2 = new InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: value,
+      });
+      element.dispatchEvent(inputEvent2);
+      
+      // Trigger blur and focusout for validation
+      element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+      element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    }, 100);
 
     return true;
   } catch (e) {
     console.error("Job-Track: Error filling field", e);
     return false;
   }
+}
+
+/**
+ * Simulate typing into a field character by character.
+ * Use this for fields that don't respond to bulk value setting.
+ * @param {HTMLInputElement} element - Element to fill.
+ * @param {string} value - Value to type.
+ */
+function simulateTyping(element, value) {
+  if (!value || !element) return false;
+  
+  try {
+    element.focus();
+    element.value = "";
+    
+    for (let i = 0; i < value.length; i++) {
+      const char = value[i];
+      
+      // Dispatch keydown
+      element.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: char,
+        code: `Key${char.toUpperCase()}`,
+      }));
+      
+      // Append character to value
+      element.value += char;
+      
+      // Dispatch input event for this character
+      element.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: char,
+      }));
+      
+      // Dispatch keyup
+      element.dispatchEvent(new KeyboardEvent("keyup", {
+        bubbles: true,
+        cancelable: true,
+        key: char,
+        code: `Key${char.toUpperCase()}`,
+      }));
+    }
+    
+    // Final change and blur events
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    
+    return true;
+  } catch (e) {
+    console.error("Job-Track: Error simulating typing", e);
+    return false;
+  }
+}
+
+/**
+ * Fill a dropdown/select element by finding and selecting a matching option.
+ * Supports both native select elements and Workday's custom dropdowns.
+ * @param {HTMLElement} element - The dropdown container or select element.
+ * @param {string} value - The value to select (will match against option text or value).
+ * @returns {boolean} - Whether the fill was successful.
+ */
+function fillDropdown(element, value) {
+  if (!value || !element) return false;
+  
+  try {
+    const valueLower = value.toLowerCase().trim();
+    
+    // Native <select> element
+    if (element.tagName === 'SELECT') {
+      const options = Array.from(element.options);
+      const match = options.find(opt => 
+        opt.value.toLowerCase() === valueLower ||
+        opt.text.toLowerCase() === valueLower ||
+        opt.text.toLowerCase().includes(valueLower) ||
+        valueLower.includes(opt.text.toLowerCase())
+      );
+      
+      if (match) {
+        element.value = match.value;
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+      return false;
+    }
+    
+    // Workday custom dropdown - click to open, then find and click option
+    // First, find and click the dropdown trigger
+    const dropdownTrigger = element.querySelector('button, [role="combobox"], [aria-haspopup]') || element;
+    dropdownTrigger.click();
+    
+    // Wait for dropdown to open and find options
+    setTimeout(() => {
+      // Look for dropdown options in various places
+      const optionSelectors = [
+        '[role="option"]',
+        '[role="listbox"] [role="option"]',
+        '[data-automation-id*="option"]',
+        '.option',
+        'li',
+      ];
+      
+      let options = [];
+      for (const selector of optionSelectors) {
+        // Check both within element and in document (Workday often renders dropdowns at body level)
+        options = Array.from(document.querySelectorAll(selector));
+        if (options.length > 0) break;
+      }
+      
+      // Find matching option
+      const match = options.find(opt => {
+        const text = (opt.textContent || '').toLowerCase().trim();
+        return text === valueLower || 
+               text.includes(valueLower) || 
+               valueLower.includes(text);
+      });
+      
+      if (match) {
+        match.click();
+        return true;
+      } else {
+        // Close dropdown if no match found
+        document.body.click();
+      }
+    }, 100);
+    
+    return true; // Return true optimistically since actual click happens async
+  } catch (e) {
+    console.error("Job-Track: Error filling dropdown", e);
+    return false;
+  }
+}
+
+/**
+ * Find and fill a Workday dropdown by automation ID.
+ * @param {string[]} automationIds - List of automation IDs to search for.
+ * @param {string} value - Value to select.
+ * @returns {boolean}
+ */
+function fillWorkdayDropdown(automationIds, value) {
+  if (!value) return false;
+  
+  for (const id of automationIds) {
+    // Look for dropdown container with this automation ID
+    let container = document.querySelector(`[data-automation-id="${id}"]`);
+    if (!container) {
+      container = document.querySelector(`[data-automation-id*="${id}"]`);
+    }
+    
+    if (container) {
+      // Find the actual dropdown trigger or select within
+      const select = container.querySelector('select');
+      if (select) {
+        return fillDropdown(select, value);
+      }
+      
+      // Workday custom dropdown
+      const dropdown = container.querySelector('[role="combobox"], [role="listbox"], button, [aria-haspopup]');
+      if (dropdown) {
+        return fillDropdown(container, value);
+      }
+      
+      // Container itself might be the dropdown
+      if (container.getAttribute('role') === 'combobox' || container.getAttribute('aria-haspopup')) {
+        return fillDropdown(container, value);
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -441,7 +658,7 @@ function autofillWorkday(profile) {
   const lastName =
     profile.last_name || splitName(profile.full_name || profile.name).lastName;
 
-  // Map profile fields to Workday automation IDs
+  // Map profile fields to Workday automation IDs (text inputs)
   const fieldMappings = [
     { automationIds: WORKDAY_AUTOMATION_IDS.firstName, value: firstName },
     { automationIds: WORKDAY_AUTOMATION_IDS.lastName, value: lastName },
@@ -460,10 +677,6 @@ function autofillWorkday(profile) {
       value: profile.address_city || profile.city,
     },
     {
-      automationIds: WORKDAY_AUTOMATION_IDS.state,
-      value: profile.address_state || profile.state,
-    },
-    {
       automationIds: WORKDAY_AUTOMATION_IDS.postalCode,
       value: profile.address_zip || profile.postal_code,
     },
@@ -472,7 +685,41 @@ function autofillWorkday(profile) {
   for (const mapping of fieldMappings) {
     if (mapping.value) {
       const field = findWorkdayField(mapping.automationIds);
-      if (field && fillField(field, mapping.value)) {
+      if (field) {
+        // Try the standard fill first
+        if (fillField(field, mapping.value)) {
+          filledCount++;
+          // For Workday, also try simulating typing as a backup after a delay
+          // This helps with fields that have strict validation
+          setTimeout(() => {
+            if (field.value !== mapping.value) {
+              simulateTyping(field, mapping.value);
+            }
+          }, 200);
+        }
+      }
+    }
+  }
+  
+  // Handle dropdown fields (phone device type, state, country)
+  const dropdownMappings = [
+    {
+      automationIds: WORKDAY_AUTOMATION_IDS.phoneDeviceType,
+      value: profile.phone_device_type || "Mobile",
+    },
+    {
+      automationIds: WORKDAY_AUTOMATION_IDS.state,
+      value: profile.address_state || profile.state,
+    },
+    {
+      automationIds: WORKDAY_AUTOMATION_IDS.country,
+      value: profile.address_country || profile.country,
+    },
+  ];
+  
+  for (const mapping of dropdownMappings) {
+    if (mapping.value) {
+      if (fillWorkdayDropdown(mapping.automationIds, mapping.value)) {
         filledCount++;
       }
     }
@@ -537,6 +784,17 @@ function autofillForm(profile) {
       filled = fillField(field, nameParts.lastName);
     } else if (matchesPatterns(field, FIELD_PATTERNS.email)) {
       filled = fillField(field, profile.email);
+    } else if (matchesPatterns(field, FIELD_PATTERNS.phoneExtension)) {
+      // Skip phone extension fields - do not fill them with phone number
+      filled = false;
+    } else if (matchesPatterns(field, FIELD_PATTERNS.phoneDeviceType)) {
+      // Phone device type - try to fill dropdown or text field
+      const deviceType = profile.phone_device_type || "Mobile";
+      if (field.tagName === 'SELECT') {
+        filled = fillDropdown(field, deviceType);
+      } else {
+        filled = fillField(field, deviceType);
+      }
     } else if (matchesPatterns(field, FIELD_PATTERNS.phone)) {
       filled = fillField(field, profile.phone);
     } else if (matchesPatterns(field, FIELD_PATTERNS.linkedin)) {
@@ -550,7 +808,13 @@ function autofillForm(profile) {
     } else if (matchesPatterns(field, FIELD_PATTERNS.city)) {
       filled = fillField(field, profile.address_city || profile.city);
     } else if (matchesPatterns(field, FIELD_PATTERNS.state)) {
-      filled = fillField(field, profile.address_state || profile.state);
+      // State might be a dropdown
+      const stateValue = profile.address_state || profile.state;
+      if (field.tagName === 'SELECT') {
+        filled = fillDropdown(field, stateValue);
+      } else {
+        filled = fillField(field, stateValue);
+      }
     } else if (matchesPatterns(field, FIELD_PATTERNS.postalCode)) {
       filled = fillField(field, profile.address_zip || profile.postal_code);
     }
@@ -560,11 +824,82 @@ function autofillForm(profile) {
       filledElements.add(field);
     }
   });
+  
+  // Also try to fill any dropdown elements for country/state
+  const dropdowns = document.querySelectorAll('select');
+  dropdowns.forEach(select => {
+    if (filledElements.has(select)) return;
+    if (select.value && select.value.trim()) return;
+    
+    const selectText = [
+      select.name || '',
+      select.id || '',
+      select.getAttribute('aria-label') || '',
+    ].join(' ').toLowerCase();
+    
+    let filled = false;
+    if (/country/i.test(selectText)) {
+      filled = fillDropdown(select, profile.address_country || profile.country);
+    } else if (/state|region|province/i.test(selectText)) {
+      filled = fillDropdown(select, profile.address_state || profile.state);
+    } else if (/device.?type|phone.?type/i.test(selectText)) {
+      filled = fillDropdown(select, profile.phone_device_type || "Mobile");
+    }
+    
+    if (filled) {
+      filledCount++;
+      filledElements.add(select);
+    }
+  });
+
+  // After filling all fields, trigger a final validation pass
+  // This helps Workday and other React apps recognize the filled state
+  if (filledCount > 0) {
+    triggerFormValidation();
+  }
 
   return {
     success: filledCount > 0,
     filledCount,
   };
+}
+
+/**
+ * Trigger form validation by simulating user interaction.
+ * This helps React-based forms (like Workday) recognize filled fields.
+ */
+function triggerFormValidation() {
+  setTimeout(() => {
+    // Find all filled inputs and re-trigger their validation
+    const inputs = document.querySelectorAll('input, textarea');
+    inputs.forEach(input => {
+      if (input.value && input.value.trim()) {
+        // Dispatch events to trigger React's validation
+        input.dispatchEvent(new FocusEvent("focus", { bubbles: true }));
+        input.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: input.value,
+        }));
+        input.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+        input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      }
+    });
+    
+    // Click somewhere neutral to trigger any pending validations
+    // Workday often validates on clicking outside the form field
+    const body = document.body;
+    body.click();
+    
+    // Also try triggering validation on any visible form
+    const forms = document.querySelectorAll('form');
+    forms.forEach(form => {
+      // Don't submit, just trigger validation events
+      form.dispatchEvent(new Event("input", { bubbles: true }));
+      form.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }, 300);
 }
 
 // Listen for messages from popup
