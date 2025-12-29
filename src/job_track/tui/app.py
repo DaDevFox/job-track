@@ -38,6 +38,9 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from job_track.db.models import Job, Profile, AppSettings, ScraperSource, get_resume_dir, get_session, init_db
+from job_track.scraper.simplify_jobs import SimplifyJobsScraper, SimplifyJobsConfig
+from job_track.scraper.hiring_cafe import HiringCafeScraper, SearchConfig, PLAYWRIGHT_AVAILABLE
+from job_track.scraper.scraper import ScrapeJobEvent, ScrapeProgressEvent, ScrapeCompleteEvent, ScrapeErrorEvent
 
 
 # ============================================================================
@@ -1277,34 +1280,103 @@ class ScrapingSourcesScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#scrape-now")
     async def scrape_now(self) -> None:
-        """Perform scraping locally with progress updates."""
+        """Perform scraping locally using streaming scrapers with real-time progress."""
         if not self.selected_source or self.is_scraping:
             return
 
         self.is_scraping = True
         self.jobs_found = 0
         self.jobs_added = 0
+        all_jobs = []
+        last_job_info = ""
         
         try:
-            self.update_progress(10, f"Starting {self.selected_source.name}...")
+            config = self.selected_source.get_config()
+            source_type = self.selected_source.source_type
             
-            jobs = await self._run_scraper_with_progress(self.selected_source)
+            # Create the appropriate streaming scraper
+            scraper = None
+            if source_type == "simplify_jobs":
+                scraper_config = SimplifyJobsConfig(
+                    include_inactive=config.get("include_inactive", False),
+                    categories=config.get("categories", ["software-engineering"]),
+                    max_age_days=config.get("max_age_days"),
+                )
+                scraper = SimplifyJobsScraper(scraper_config)
+            elif source_type == "hiring_cafe":
+                if not PLAYWRIGHT_AVAILABLE:
+                    self.update_progress(0, "✗ Playwright not installed for hiring.cafe")
+                    return
+                experience_levels = config.get("experience_levels", ["entry-level", "internship"])
+                if isinstance(experience_levels, str):
+                    experience_levels = [e.strip() for e in experience_levels.split(",")]
+                scraper_config = SearchConfig(
+                    query=config.get("query", "software engineer"),
+                    department=config.get("department", "software-engineering"),
+                    experience_levels=experience_levels,
+                    location=config.get("location", "United States"),
+                    max_results=config.get("max_results", 50),
+                )
+                scraper = HiringCafeScraper(scraper_config)
+            else:
+                # Fall back to the old method for custom URLs
+                jobs = await self._run_scraper_with_progress(self.selected_source)
+                self.update_progress(80, f"Saving {len(jobs)} jobs to database...")
+                added = await self._save_jobs(jobs)
+                self.update_progress(100, f"✓ Complete! Found {len(jobs)}, added {added} new jobs.")
+                return
             
-            self.update_progress(80, f"Saving {len(jobs)} jobs to database...")
-            added = await self._save_jobs(jobs)
+            # Use the streaming scraper
+            async for event in scraper.scrape_stream():
+                if isinstance(event, ScrapeProgressEvent):
+                    # Use percentage-based progress directly
+                    step = event.step
+                    total = event.total_steps
+                    if total == 100:
+                        progress = step
+                    else:
+                        progress = int((step / total) * 100)
+                    self.update_progress(progress, event.message)
+                    if event.jobs_found > 0:
+                        self.jobs_found = event.jobs_found
+                
+                elif isinstance(event, ScrapeJobEvent):
+                    job = event.job
+                    all_jobs.append({
+                        "title": job.title,
+                        "company": job.company,
+                        "location": job.location,
+                        "description": job.description or "",
+                        "apply_url": job.apply_url,
+                        "tags": job.tags,
+                        "source": source_type,
+                    })
+                    self.jobs_found = len(all_jobs)
+                    last_job_info = f"{job.title} @ {job.company}"
+                    if len(all_jobs) % 5 == 0:
+                        self.update_job_log(f"Found {len(all_jobs)} jobs... {last_job_info[:40]}")
+                
+                elif isinstance(event, ScrapeCompleteEvent):
+                    self.update_progress(90, f"Saving {len(all_jobs)} jobs to database...")
+                    added = await self._save_jobs(all_jobs)
+                    self.jobs_added = added
+                    
+                    # Update last scraped time
+                    session = get_session()
+                    try:
+                        source = session.query(ScraperSource).filter(ScraperSource.id == self.selected_source.id).first()
+                        if source:
+                            source.last_scraped_at = datetime.datetime.now()
+                            session.commit()
+                    finally:
+                        session.close()
+                    
+                    self.update_progress(100, f"✓ Complete! Found {len(all_jobs)}, added {added} new jobs.")
+                    self.update_job_log(f"Last job: {last_job_info[:50]}")
+                
+                elif isinstance(event, ScrapeErrorEvent):
+                    self.update_progress(0, f"✗ Error: {event.message[:60]}")
             
-            # Update last scraped time
-            session = get_session()
-            try:
-                source = session.query(ScraperSource).filter(ScraperSource.id == self.selected_source.id).first()
-                if source:
-                    source.last_scraped_at = datetime.datetime.now()
-                    session.commit()
-            finally:
-                session.close()
-            
-            self.update_progress(100, f"✓ Complete! Found {len(jobs)}, added {added} new jobs.")
-            self.update_job_log(f"Last job: {jobs[-1]['title'] if jobs else 'None'} @ {jobs[-1]['company'] if jobs else 'N/A'}")
         except Exception as e:
             self.update_progress(0, f"✗ Error: {str(e)[:60]}")
         finally:
@@ -1348,11 +1420,15 @@ class ScrapingSourcesScreen(ModalScreen[bool]):
                                     self.update_progress(10, f"Started scraping {data.get('source_name', '')}...")
                                 
                                 elif event_type == "progress":
-                                    step = data.get("step", 1)
-                                    total = data.get("total_steps", 3)
-                                    progress = int((step / total) * 80) + 10
+                                    step = data.get("step", 0)
+                                    total = data.get("total_steps", 100)
+                                    # Handle both percentage-based (total=100) and step-based progress
+                                    if total == 100:
+                                        progress = step
+                                    else:
+                                        progress = int((step / total) * 100)
                                     self.update_progress(progress, data.get("message", "Processing..."))
-                                    self.jobs_found = data.get("jobs_found", 0)
+                                    self.jobs_found = data.get("jobs_found", self.jobs_found)
                                 
                                 elif event_type == "job":
                                     self.jobs_found += 1
@@ -2042,20 +2118,18 @@ class JobTrackApp(App):
     """Main TUI application for job tracking."""
 
     CSS = """
+    Screen {
+        layout: vertical;
+    }
+
     #main-container {
-        height: 100%;
+        height: 1fr;
     }
 
     #filter-bar {
-        dock: top;
         height: 3;
         padding: 0 1;
         background: $surface;
-    }
-
-    #filter-bar Horizontal {
-        height: 100%;
-        align: left middle;
     }
 
     #filter-bar Label {
@@ -2083,7 +2157,7 @@ class JobTrackApp(App):
     }
 
     DataTable {
-        height: 100%;
+        height: 1fr;
     }
 
     DataTable > .datatable--cursor {
@@ -2091,19 +2165,25 @@ class JobTrackApp(App):
     }
 
     TabbedContent {
-        height: 100%;
+        height: 1fr;
     }
 
     TabPane {
         padding: 0;
+        height: 1fr;
+    }
+
+    ContentSwitcher {
+        height: 1fr;
     }
 
     .tab-content {
-        height: 100%;
+        height: 1fr;
     }
 
     #profile-view {
         padding: 1;
+        height: 1fr;
     }
 
     #profile-info {
