@@ -38,7 +38,9 @@ def main():
     profile_subparsers = profile_parser.add_subparsers(dest="profile_command")
     profile_subparsers.add_parser("list", help="List all profiles")
     add_profile = profile_subparsers.add_parser("add", help="Add a new profile")
-    add_profile.add_argument("--name", required=True, help="Full name")
+    add_profile.add_argument("--profile-name", required=True, help="Name for this profile (e.g., 'Tech Resume')")
+    add_profile.add_argument("--first-name", required=True, help="First name")
+    add_profile.add_argument("--last-name", required=True, help="Last name")
     add_profile.add_argument("--email", required=True, help="Email address")
     add_profile.add_argument("--phone", help="Phone number")
 
@@ -111,12 +113,13 @@ def run_profile_command(args):
         if args.profile_command == "list":
             profiles = session.query(Profile).all()
             if not profiles:
-                print("No profiles found. Add one with: job-track profile add --name 'Name' --email 'email@example.com'")
+                print("No profiles found. Add one with: job-track profile add --profile-name 'My Profile' --first-name 'John' --last-name 'Doe' --email 'email@example.com'")
             else:
                 print(f"Found {len(profiles)} profile(s):\n")
                 for p in profiles:
                     print(f"  ID: {p.id}")
-                    print(f"  Name: {p.name}")
+                    print(f"  Profile Name: {p.profile_name}")
+                    print(f"  Name: {p.get_full_name()}")
                     print(f"  Email: {p.email}")
                     if p.phone:
                         print(f"  Phone: {p.phone}")
@@ -125,13 +128,15 @@ def run_profile_command(args):
                     print()
         elif args.profile_command == "add":
             profile = Profile(
-                name=args.name,
+                profile_name=args.profile_name,
+                first_name=args.first_name,
+                last_name=args.last_name,
                 email=args.email,
                 phone=args.phone,
             )
             session.add(profile)
             session.commit()
-            print(f"Created profile: {profile.name} (ID: {profile.id})")
+            print(f"Created profile: {profile.profile_name} (ID: {profile.id})")
     finally:
         session.close()
 

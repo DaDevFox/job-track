@@ -11,13 +11,17 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import AsyncGenerator, Optional
 from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
-from .scraper import ScrapedJob, JobScraper
+from .scraper import (
+    ScrapedJob, JobScraper, ScrapeEventUnion,
+    ScrapeStartEvent, ScrapeProgressEvent, ScrapeJobEvent,
+    ScrapeCompleteEvent, ScrapeErrorEvent,
+)
 
 
 # Raw GitHub URL for the README
@@ -348,6 +352,62 @@ class SimplifyJobsScraper(JobScraper):
                 all_jobs.extend(jobs)
         
         return all_jobs
+    
+    async def scrape_stream(self) -> AsyncGenerator[ScrapeEventUnion, None]:
+        """Stream scraping events as an async generator.
+        
+        Yields:
+            ScrapeEvent objects representing progress and results.
+        """
+        yield ScrapeStartEvent(source_name="SimplifyJobs", source_type="simplify_jobs")
+        yield ScrapeProgressEvent(
+            step=1, total_steps=3,
+            message="Fetching SimplifyJobs README...",
+        )
+        
+        all_jobs: list[ScrapedJob] = []
+        errors: list[str] = []
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(RAW_README_URL)
+                response.raise_for_status()
+                content = response.text
+            
+            yield ScrapeProgressEvent(
+                step=2, total_steps=3,
+                message="Parsing job listings...",
+            )
+            
+            # Parse the README HTML content
+            soup = BeautifulSoup(content, "html.parser")
+            
+            # Process each configured category
+            for category in self.config.categories:
+                header = SimplifyJobsConfig.CATEGORY_HEADERS.get(category)
+                if not header:
+                    continue
+                
+                # Find all tables in the document
+                tables = soup.find_all("table")
+                
+                for table in tables:
+                    jobs = self._parse_table(str(table), category)
+                    for job in jobs:
+                        all_jobs.append(job)
+                        yield ScrapeJobEvent(job=job)
+            
+            yield ScrapeProgressEvent(
+                step=3, total_steps=3,
+                message=f"Found {len(all_jobs)} jobs",
+                jobs_found=len(all_jobs),
+            )
+            
+            yield ScrapeCompleteEvent(total_scraped=len(all_jobs), jobs=all_jobs, errors=errors)
+            
+        except Exception as e:
+            errors.append(str(e))
+            yield ScrapeErrorEvent(message=str(e))
     
     def scrape_sync(self) -> list[ScrapedJob]:
         """Synchronous wrapper for scrape().

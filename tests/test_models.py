@@ -85,7 +85,9 @@ class TestProfileModel:
     def test_create_profile(self, temp_db):
         """Test creating a new profile."""
         profile = Profile(
-            name="John Doe",
+            profile_name="Tech Applications",
+            first_name="John",
+            last_name="Doe",
             email="john@example.com",
             phone="+1-555-555-5555",
         )
@@ -94,11 +96,14 @@ class TestProfileModel:
         
         assert profile.id is not None
         assert profile.created_at is not None
+        assert profile.get_full_name() == "John Doe"
 
     def test_profile_resume_versions(self, temp_db):
         """Test resume versioning."""
         profile = Profile(
-            name="Jane Smith",
+            profile_name="Default",
+            first_name="Jane",
+            last_name="Smith",
             email="jane@example.com",
         )
         temp_db.add(profile)
@@ -134,7 +139,9 @@ class TestProfileModel:
     def test_profile_latest_resume(self, temp_db):
         """Test getting latest resume."""
         profile = Profile(
-            name="Bob Builder",
+            profile_name="Default",
+            first_name="Bob",
+            last_name="Builder",
             email="bob@example.com",
         )
         temp_db.add(profile)
@@ -157,7 +164,9 @@ class TestProfileModel:
     def test_profile_to_dict(self, temp_db):
         """Test profile serialization."""
         profile = Profile(
-            name="Alice Wonder",
+            profile_name="Main Profile",
+            first_name="Alice",
+            last_name="Wonder",
             email="alice@example.com",
             linkedin_url="https://linkedin.com/in/alice",
         )
@@ -166,7 +175,10 @@ class TestProfileModel:
         temp_db.commit()
         
         data = profile.to_dict()
-        assert data["name"] == "Alice Wonder"
+        assert data["profile_name"] == "Main Profile"
+        assert data["first_name"] == "Alice"
+        assert data["last_name"] == "Wonder"
+        assert data["full_name"] == "Alice Wonder"
         assert data["email"] == "alice@example.com"
         assert data["linkedin_url"] == "https://linkedin.com/in/alice"
         assert len(data["resume_versions"]) == 1
@@ -174,7 +186,9 @@ class TestProfileModel:
     def test_profile_address_fields(self, temp_db):
         """Test profile address fields."""
         profile = Profile(
-            name="Charlie Brown",
+            profile_name="Home Profile",
+            first_name="Charlie",
+            last_name="Brown",
             email="charlie@example.com",
             address_street="123 Main St",
             address_city="Springfield",
@@ -202,7 +216,9 @@ class TestProfileModel:
     def test_profile_partial_address(self, temp_db):
         """Test profile with partial address."""
         profile = Profile(
-            name="Dan Smith",
+            profile_name="Work Profile",
+            first_name="Dan",
+            last_name="Smith",
             email="dan@example.com",
             address_city="Boston",
             address_state="MA",

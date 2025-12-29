@@ -93,12 +93,158 @@ class Job(Base):
         }
 
 
+class ScraperSource(Base):
+    """Model representing a configured scraping source.
+
+    Attributes:
+        id: Unique identifier for the source.
+        name: Display name for the source.
+        source_type: Type of scraper (hiring_cafe, simplify_jobs, custom_url).
+        config: JSON configuration for the scraper.
+        schedule: Scraping schedule (manual, hourly, daily, weekly).
+        enabled: Whether automatic scraping is enabled.
+        last_scraped_at: Last time this source was scraped.
+        created_at: When this source was created.
+    """
+
+    __tablename__ = "scraper_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)  # hiring_cafe, simplify_jobs, custom_url
+    config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON config
+    schedule: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)  # manual, hourly, daily, weekly
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_scraped_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    # Valid schedule options
+    SCHEDULE_OPTIONS = ["manual", "hourly", "daily", "weekly"]
+    
+    # Built-in source types
+    SOURCE_TYPES = {
+        "hiring_cafe": "Hiring.cafe",
+        "simplify_jobs": "SimplifyJobs GitHub",
+        "custom_url": "Custom URL",
+    }
+    
+    # Default configurations for each source type
+    DEFAULT_CONFIGS = {
+        "hiring_cafe": {
+            "query": "software engineer",
+            "department": "software-engineering",
+            "experience_levels": ["entry-level", "internship"],
+            "location": "United States",
+            "max_results": 50,
+        },
+        "simplify_jobs": {
+            "categories": ["software-engineering"],
+            "include_inactive": False,
+            "max_age_days": 30,
+        },
+        "custom_url": {
+            "urls": [],
+            "company": "",
+            "filter_new_grad": False,
+        },
+    }
+    
+    # Config field definitions for UI
+    CONFIG_FIELDS = {
+        "hiring_cafe": [
+            {"name": "query", "label": "Search Query", "type": "text", "default": "software engineer"},
+            {"name": "department", "label": "Department", "type": "select", 
+             "options": ["software-engineering", "data-science", "product", "design", "marketing", "sales", "other"],
+             "default": "software-engineering"},
+            {"name": "experience_levels", "label": "Experience Levels (comma-separated)", "type": "text", 
+             "default": "entry-level,internship"},
+            {"name": "location", "label": "Location", "type": "text", "default": "United States"},
+            {"name": "max_results", "label": "Max Results", "type": "number", "default": 50},
+        ],
+        "simplify_jobs": [
+            {"name": "categories", "label": "Categories (comma-separated)", "type": "text",
+             "default": "software-engineering"},
+            {"name": "include_inactive", "label": "Include Closed Positions", "type": "bool", "default": False},
+            {"name": "max_age_days", "label": "Max Age (days)", "type": "number", "default": 30},
+        ],
+        "custom_url": [
+            {"name": "urls", "label": "URLs (one per line)", "type": "multiline", "default": ""},
+            {"name": "company", "label": "Company Name", "type": "text", "default": ""},
+            {"name": "filter_new_grad", "label": "Filter New Grad Only", "type": "bool", "default": False},
+        ],
+    }
+
+    def get_config(self) -> dict:
+        """Parse config JSON into a dict."""
+        if not self.config:
+            return {}
+        return json.loads(self.config)
+
+    def set_config(self, config: dict) -> None:
+        """Set config from a dict."""
+        self.config = json.dumps(config)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "source_type": self.source_type,
+            "config": self.get_config(),
+            "schedule": self.schedule,
+            "enabled": self.enabled,
+            "last_scraped_at": self.last_scraped_at.isoformat() if self.last_scraped_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AppSettings(Base):
+    """Model for storing application settings.
+
+    Singleton-like table with a single row for app-wide settings.
+    
+    Attributes:
+        id: Always 1 (singleton).
+        api_server_url: URL of the API server for remote scraping.
+        auto_scrape_enabled: Whether automatic scraping is globally enabled.
+        updated_at: Last update timestamp.
+    """
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    api_server_url: Mapped[str] = mapped_column(String(2048), default="http://localhost:8787", nullable=False)
+    auto_scrape_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    @classmethod
+    def get_settings(cls, session) -> "AppSettings":
+        """Get or create the singleton settings row."""
+        settings = session.query(cls).filter(cls.id == 1).first()
+        if not settings:
+            settings = cls(id=1)
+            session.add(settings)
+            session.commit()
+            session.refresh(settings)
+        return settings
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "api_server_url": self.api_server_url,
+            "auto_scrape_enabled": self.auto_scrape_enabled,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class Profile(Base):
     """Model representing a user profile for job applications.
 
     Attributes:
         id: Unique identifier for the profile.
-        name: Full name.
+        profile_name: Name/label for this profile (e.g., "Tech Resume", "Finance Resume").
+        first_name: User's first name.
+        last_name: User's last name.
         email: Email address.
         phone: Phone number.
         address_street: Street address.
@@ -117,7 +263,9 @@ class Profile(Base):
     __tablename__ = "profiles"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    profile_name: Mapped[str] = mapped_column(String(255), nullable=False)  # Name of the profile itself
+    first_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     address_street: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -194,6 +342,10 @@ class Profile(Base):
         versions = self.get_resume_versions()
         return [v for v in versions if v.get("is_named", False)]
     
+    def get_full_name(self) -> str:
+        """Get the user's full name (first + last)."""
+        return f"{self.first_name} {self.last_name}".strip()
+    
     def get_full_address(self) -> str:
         """Get the full address as a formatted string."""
         parts = []
@@ -212,7 +364,10 @@ class Profile(Base):
         """Convert profile to dictionary."""
         return {
             "id": self.id,
-            "name": self.name,
+            "profile_name": self.profile_name,
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "full_name": self.get_full_name(),
             "email": self.email,
             "phone": self.phone,
             "address_street": self.address_street,
@@ -254,10 +409,26 @@ def get_engine(db_path: Optional[Path] = None):
 def _migrate_db(engine):
     """Run any needed database migrations."""
     from sqlalchemy import inspect, text
+    from sqlalchemy.schema import CreateTable
 
     inspector = inspect(engine)
     
-    # Check if profiles table needs address columns
+    # Check if profiles table has old schema (single 'name' column instead of first_name/last_name)
+    # If so, drop and recreate the table (user requested not to worry about migrations)
+    if "profiles" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("profiles")]
+        # Check for old schema: has 'name' but not 'first_name'
+        if "name" in columns and "first_name" not in columns:
+            with engine.connect() as conn:
+                conn.execute(text("DROP TABLE profiles"))
+                conn.commit()
+            # Recreate with new schema
+            with engine.connect() as conn:
+                conn.execute(CreateTable(Profile.__table__))
+                conn.commit()
+            inspector = inspect(engine)  # Refresh inspector
+    
+    # Check if profiles table needs address columns (for any remaining old profiles)
     if "profiles" in inspector.get_table_names():
         columns = [c["name"] for c in inspector.get_columns("profiles")]
         new_columns = [
@@ -281,6 +452,30 @@ def _migrate_db(engine):
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN posted_at DATETIME"))
             # Also handle resume_version type change (was int, now string)
             conn.commit()
+    
+    # Create default scraper sources if table is new and empty
+    if "scraper_sources" in inspector.get_table_names():
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT COUNT(*) FROM scraper_sources"))
+            count = result.scalar()
+            if count == 0:
+                # Add default sources
+                import uuid as uuid_mod
+                from datetime import datetime as dt
+                now = dt.now().isoformat()
+                defaults = [
+                    (str(uuid_mod.uuid4()), "Hiring.cafe - New Grad SWE", "hiring_cafe", 
+                     '{"query": "software engineer", "department": "software-engineering", "experience_levels": ["entry-level", "internship"], "location": "United States", "max_results": 50}',
+                     "manual"),
+                    (str(uuid_mod.uuid4()), "SimplifyJobs - Software Engineering", "simplify_jobs",
+                     '{"categories": ["software-engineering"], "include_inactive": false}',
+                     "manual"),
+                ]
+                for src_id, name, src_type, config, schedule in defaults:
+                    conn.execute(text(
+                        "INSERT INTO scraper_sources (id, name, source_type, config, schedule, enabled, created_at) VALUES (:id, :name, :type, :config, :schedule, 1, :created_at)"
+                    ), {"id": src_id, "name": name, "type": src_type, "config": config, "schedule": schedule, "created_at": now})
+                conn.commit()
 
 
 def init_db(db_path: Optional[Path] = None):

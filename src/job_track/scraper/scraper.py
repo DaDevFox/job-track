@@ -7,8 +7,9 @@ from various company career pages.
 import asyncio
 import hashlib
 import re
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import AsyncGenerator, Optional, Union
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -20,6 +21,109 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
+
+
+class ScrapeEventType(Enum):
+    """Types of scrape events for streaming."""
+    START = "start"
+    PROGRESS = "progress"
+    JOB = "job"
+    COMPLETE = "complete"
+    ERROR = "error"
+
+
+@dataclass
+class ScrapeEvent:
+    """Base event for scrape streaming."""
+    event_type: ScrapeEventType
+    
+    def to_dict(self) -> dict:
+        """Convert event to dictionary for JSON serialization."""
+        return {"event_type": self.event_type.value}
+
+
+@dataclass
+class ScrapeStartEvent:
+    """Event emitted when scraping starts."""
+    source_name: str
+    source_type: str
+    event_type: ScrapeEventType = field(default=ScrapeEventType.START)
+    
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type.value,
+            "source_name": self.source_name,
+            "source_type": self.source_type,
+        }
+
+
+@dataclass
+class ScrapeProgressEvent:
+    """Event emitted to report progress."""
+    step: int
+    total_steps: int
+    message: str
+    jobs_found: int = 0
+    jobs_added: int = 0
+    event_type: ScrapeEventType = field(default=ScrapeEventType.PROGRESS)
+    
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type.value,
+            "step": self.step,
+            "total_steps": self.total_steps,
+            "message": self.message,
+            "jobs_found": self.jobs_found,
+            "jobs_added": self.jobs_added,
+        }
+
+
+@dataclass
+class ScrapeJobEvent:
+    """Event emitted when a job is found."""
+    job: "ScrapedJob"
+    event_type: ScrapeEventType = field(default=ScrapeEventType.JOB)
+    
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type.value,
+            "title": self.job.title,
+            "company": self.job.company,
+            "location": self.job.location,
+        }
+
+
+@dataclass
+class ScrapeCompleteEvent:
+    """Event emitted when scraping completes."""
+    total_scraped: int
+    jobs: list["ScrapedJob"]
+    errors: list[str] = field(default_factory=list)
+    event_type: ScrapeEventType = field(default=ScrapeEventType.COMPLETE)
+    
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type.value,
+            "total_scraped": self.total_scraped,
+            "errors": self.errors,
+        }
+
+
+@dataclass
+class ScrapeErrorEvent:
+    """Event emitted on error."""
+    message: str
+    event_type: ScrapeEventType = field(default=ScrapeEventType.ERROR)
+    
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type.value,
+            "message": self.message,
+        }
+
+
+# Type alias for all scrape events
+ScrapeEventUnion = Union[ScrapeStartEvent, ScrapeProgressEvent, ScrapeJobEvent, ScrapeCompleteEvent, ScrapeErrorEvent]
 
 
 @dataclass
@@ -73,6 +177,30 @@ class JobScraper:
             text += " " + description.lower()
 
         return any(keyword in text for keyword in self.new_grad_keywords)
+
+    async def scrape_stream(self) -> AsyncGenerator[ScrapeEventUnion, None]:
+        """Stream scraping events as an async generator.
+        
+        Subclasses should override this method to provide streaming scrape results.
+        Default implementation calls scrape() and yields events from the result.
+        
+        Yields:
+            ScrapeEvent objects representing progress and results.
+        """
+        yield ScrapeStartEvent(source_name="Generic Scraper", source_type="generic")
+        yield ScrapeProgressEvent(step=1, total_steps=1, message="Scraping...")
+        
+        try:
+            jobs = await self.scrape()
+            for job in jobs:
+                yield ScrapeJobEvent(job=job)
+            yield ScrapeCompleteEvent(total_scraped=len(jobs), jobs=jobs)
+        except Exception as e:
+            yield ScrapeErrorEvent(message=str(e))
+
+    async def scrape(self) -> list[ScrapedJob]:
+        """Scrape jobs. Subclasses should override this method."""
+        raise NotImplementedError("Subclasses must implement scrape()")
 
     def _extract_company_from_url(self, url: str) -> str:
         """Extract company name from URL."""

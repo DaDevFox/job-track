@@ -28,6 +28,7 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    ProgressBar,
     Select,
     Static,
     Switch,
@@ -36,7 +37,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from job_track.db.models import Job, Profile, get_resume_dir, get_session, init_db
+from job_track.db.models import Job, Profile, AppSettings, ScraperSource, get_resume_dir, get_session, init_db
 
 
 # ============================================================================
@@ -246,7 +247,7 @@ class ProfileSelectScreen(ModalScreen[Optional[str]]):
                             if latest:
                                 resume_info = f" - Resume: {latest.get('name', 'N/A')}"
                             yield Button(
-                                f"{profile.name} ({profile.email}){resume_info}",
+                                f"{profile.profile_name} ({profile.get_full_name()}){resume_info}",
                                 id=f"profile-{profile.id}",
                                 classes="profile-btn",
                             )
@@ -331,13 +332,28 @@ class ProfileEditScreen(ModalScreen[bool]):
         with Vertical(id="edit-profile-container"):
             yield Label(title, id="edit-title")
             with VerticalScroll(id="edit-profile-scroll"):
-                # Basic Info
-                yield Label("── Basic Information ──", classes="section-header")
-                yield Label("Name:", classes="field-label")
+                # Profile Info
+                yield Label("── Profile ──", classes="section-header")
+                yield Label("Profile Name:", classes="field-label")
                 yield Input(
-                    id="name-input",
-                    placeholder="Full Name",
-                    value=self.profile.name if self.profile else "",
+                    id="profile-name-input",
+                    placeholder="e.g., Tech Resume, Finance Applications",
+                    value=self.profile.profile_name if self.profile else "",
+                )
+                
+                # Basic Info
+                yield Label("── Personal Information ──", classes="section-header")
+                yield Label("First Name:", classes="field-label")
+                yield Input(
+                    id="first-name-input",
+                    placeholder="First Name",
+                    value=self.profile.first_name if self.profile else "",
+                )
+                yield Label("Last Name:", classes="field-label")
+                yield Input(
+                    id="last-name-input",
+                    placeholder="Last Name",
+                    value=self.profile.last_name if self.profile else "",
                 )
                 yield Label("Email:", classes="field-label")
                 yield Input(
@@ -413,7 +429,9 @@ class ProfileEditScreen(ModalScreen[bool]):
     @on(Button.Pressed, "#save")
     def save_profile(self) -> None:
         """Save the profile."""
-        name = self.query_one("#name-input", Input).value.strip()
+        profile_name = self.query_one("#profile-name-input", Input).value.strip()
+        first_name = self.query_one("#first-name-input", Input).value.strip()
+        last_name = self.query_one("#last-name-input", Input).value.strip()
         email = self.query_one("#email-input", Input).value.strip()
         phone = self.query_one("#phone-input", Input).value.strip()
         street = self.query_one("#street-input", Input).value.strip()
@@ -425,7 +443,7 @@ class ProfileEditScreen(ModalScreen[bool]):
         github = self.query_one("#github-input", Input).value.strip()
         portfolio = self.query_one("#portfolio-input", Input).value.strip()
 
-        if not name or not email:
+        if not profile_name or not first_name or not last_name or not email:
             return  # Basic validation
 
         session = get_session()
@@ -433,7 +451,9 @@ class ProfileEditScreen(ModalScreen[bool]):
             if self.profile_id:
                 profile = session.query(Profile).filter(Profile.id == self.profile_id).first()
                 if profile:
-                    profile.name = name
+                    profile.profile_name = profile_name
+                    profile.first_name = first_name
+                    profile.last_name = last_name
                     profile.email = email
                     profile.phone = phone if phone else None
                     profile.address_street = street if street else None
@@ -446,7 +466,9 @@ class ProfileEditScreen(ModalScreen[bool]):
                     profile.portfolio_url = portfolio if portfolio else None
             else:
                 profile = Profile(
-                    name=name,
+                    profile_name=profile_name,
+                    first_name=first_name,
+                    last_name=last_name,
                     email=email,
                     phone=phone if phone else None,
                     address_street=street if street else None,
@@ -1101,9 +1123,919 @@ class HiringCafeSearchScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-# ============================================================================
-# Main Application
-# ============================================================================
+class ScrapingSourcesScreen(ModalScreen[bool]):
+    """Modal screen for selecting and triggering scraping sources with progress tracking."""
+
+    CSS = """
+    ScrapingSourcesScreen {
+        align: center middle;
+    }
+
+    #sources-container {
+        width: 90;
+        height: 40;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #sources-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #source-select {
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    #source-info {
+        height: 6;
+        border: solid $secondary;
+        padding: 1;
+        margin-bottom: 1;
+    }
+
+    #progress-section {
+        height: 10;
+        border: solid $primary;
+        padding: 1;
+        margin-bottom: 1;
+    }
+
+    #progress-bar {
+        width: 100%;
+        height: 1;
+        margin: 1 0;
+    }
+
+    #progress-status {
+        height: 2;
+    }
+
+    #job-log {
+        height: 4;
+        overflow-y: auto;
+        color: $text-muted;
+    }
+
+    #sources-buttons {
+        dock: bottom;
+        height: 3;
+        align: center middle;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        """Initialize."""
+        super().__init__()
+        self.sources: list[ScraperSource] = []
+        self.selected_source: Optional[ScraperSource] = None
+        self.api_url = "http://localhost:8787"
+        self.is_scraping = False
+        self.jobs_found = 0
+        self.jobs_added = 0
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets."""
+        from textual.widgets import ProgressBar
+        
+        session = get_session()
+        try:
+            self.sources = list(session.query(ScraperSource).filter(ScraperSource.enabled.is_(True)).all())
+            settings = AppSettings.get_settings(session)
+            self.api_url = settings.api_server_url
+        finally:
+            session.close()
+
+        source_options = [(s.name, s.id) for s in self.sources]
+        if not source_options:
+            source_options = [("No sources configured", "")]
+
+        with Vertical(id="sources-container"):
+            yield Label("Scrape Jobs from Source", id="sources-title")
+            
+            yield Label("Select Scraping Source:")
+            yield Select(source_options, id="source-select", value=source_options[0][1] if source_options else "")
+            
+            yield Static("Select a source to see details", id="source-info")
+            
+            # Progress section
+            with Container(id="progress-section"):
+                yield Label("Progress:", classes="field-label")
+                yield ProgressBar(id="progress-bar", total=100, show_eta=False)
+                yield Static("Ready to scrape", id="progress-status")
+                yield Static("", id="job-log")
+            
+            with Horizontal(id="sources-buttons"):
+                yield Button("Scrape Now", id="scrape-now", variant="success")
+                yield Button("Scrape via API (Streaming)", id="scrape-api-stream", variant="primary")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_mount(self) -> None:
+        """Called when mounted."""
+        if self.sources:
+            self._update_source_info(self.sources[0].id)
+
+    def _update_source_info(self, source_id: str) -> None:
+        """Update the source info display."""
+        for source in self.sources:
+            if source.id == source_id:
+                self.selected_source = source
+                config = source.get_config()
+                info_lines = [
+                    f"[bold]Type:[/bold] {ScraperSource.SOURCE_TYPES.get(source.source_type, source.source_type)}",
+                    f"[bold]Schedule:[/bold] {source.schedule}",
+                    f"[bold]Last Scraped:[/bold] {source.last_scraped_at.strftime('%Y-%m-%d %H:%M') if source.last_scraped_at else 'Never'}",
+                ]
+                if config:
+                    config_str = ", ".join(f"{k}: {v}" for k, v in list(config.items())[:3])
+                    info_lines.append(f"[bold]Config:[/bold] {config_str[:60]}...")
+                self.query_one("#source-info", Static).update("\n".join(info_lines))
+                return
+
+    @on(Select.Changed, "#source-select")
+    def source_changed(self, event: Select.Changed) -> None:
+        """Handle source selection change."""
+        if event.value:
+            self._update_source_info(str(event.value))
+
+    def update_progress(self, progress: float, status: str) -> None:
+        """Update progress bar and status."""
+        from textual.widgets import ProgressBar
+        self.query_one("#progress-bar", ProgressBar).update(progress=progress)
+        self.query_one("#progress-status", Static).update(status)
+
+    def update_job_log(self, message: str) -> None:
+        """Update the job log with recent activity."""
+        self.query_one("#job-log", Static).update(message)
+
+    @on(Button.Pressed, "#scrape-now")
+    async def scrape_now(self) -> None:
+        """Perform scraping locally with progress updates."""
+        if not self.selected_source or self.is_scraping:
+            return
+
+        self.is_scraping = True
+        self.jobs_found = 0
+        self.jobs_added = 0
+        
+        try:
+            self.update_progress(10, f"Starting {self.selected_source.name}...")
+            
+            jobs = await self._run_scraper_with_progress(self.selected_source)
+            
+            self.update_progress(80, f"Saving {len(jobs)} jobs to database...")
+            added = await self._save_jobs(jobs)
+            
+            # Update last scraped time
+            session = get_session()
+            try:
+                source = session.query(ScraperSource).filter(ScraperSource.id == self.selected_source.id).first()
+                if source:
+                    source.last_scraped_at = datetime.datetime.now()
+                    session.commit()
+            finally:
+                session.close()
+            
+            self.update_progress(100, f"✓ Complete! Found {len(jobs)}, added {added} new jobs.")
+            self.update_job_log(f"Last job: {jobs[-1]['title'] if jobs else 'None'} @ {jobs[-1]['company'] if jobs else 'N/A'}")
+        except Exception as e:
+            self.update_progress(0, f"✗ Error: {str(e)[:60]}")
+        finally:
+            self.is_scraping = False
+
+    @on(Button.Pressed, "#scrape-api-stream")
+    async def scrape_via_api_stream(self) -> None:
+        """Trigger scraping via the API server with SSE streaming progress."""
+        if not self.selected_source or self.is_scraping:
+            return
+
+        self.is_scraping = True
+        self.jobs_found = 0
+        self.jobs_added = 0
+        
+        self.update_progress(5, f"Connecting to API at {self.api_url}...")
+        
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                # Use the streaming endpoint
+                url = f"{self.api_url}/api/scrape/stream/{self.selected_source.id}"
+                
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        self.update_progress(0, f"API error: {response.status_code}")
+                        return
+                    
+                    last_job = ""
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        
+                        if line.startswith("event: "):
+                            event_type = line[7:]
+                        elif line.startswith("data: "):
+                            try:
+                                import json
+                                data = json.loads(line[6:])
+                                
+                                if event_type == "start":
+                                    self.update_progress(10, f"Started scraping {data.get('source_name', '')}...")
+                                
+                                elif event_type == "progress":
+                                    step = data.get("step", 1)
+                                    total = data.get("total_steps", 3)
+                                    progress = int((step / total) * 80) + 10
+                                    self.update_progress(progress, data.get("message", "Processing..."))
+                                    self.jobs_found = data.get("jobs_found", 0)
+                                
+                                elif event_type == "job":
+                                    self.jobs_found += 1
+                                    last_job = f"{data.get('title', '')} @ {data.get('company', '')}"
+                                    if self.jobs_found % 5 == 0:  # Update every 5 jobs to avoid flickering
+                                        self.update_job_log(f"Found {self.jobs_found} jobs... {last_job[:40]}")
+                                
+                                elif event_type == "complete":
+                                    self.jobs_found = data.get("total_scraped", 0)
+                                    self.jobs_added = data.get("total_added", 0)
+                                    self.update_progress(100, 
+                                        f"✓ Complete! Found {self.jobs_found}, added {self.jobs_added} new jobs.")
+                                    self.update_job_log(f"Last: {last_job[:50]}")
+                                
+                                elif event_type == "error":
+                                    self.update_progress(0, f"✗ Error: {data.get('message', 'Unknown error')}")
+                            
+                            except json.JSONDecodeError:
+                                pass
+        
+        except httpx.ConnectError:
+            self.update_progress(0, f"✗ Cannot connect to API at {self.api_url}")
+        except Exception as e:
+            self.update_progress(0, f"✗ Error: {str(e)[:60]}")
+        finally:
+            self.is_scraping = False
+
+    async def _run_scraper_with_progress(self, source: ScraperSource) -> list[dict]:
+        """Run the appropriate scraper based on source type with progress updates."""
+        config = source.get_config()
+        
+        if source.source_type == "hiring_cafe":
+            self.update_progress(20, "Searching hiring.cafe...")
+            return await self._scrape_hiring_cafe_source(config)
+        elif source.source_type == "simplify_jobs":
+            self.update_progress(20, "Fetching SimplifyJobs GitHub...")
+            return await self._scrape_simplify_jobs_source(config)
+        elif source.source_type == "custom_url":
+            self.update_progress(20, "Scraping custom URLs...")
+            return await self._scrape_custom_urls(config)
+        else:
+            raise ValueError(f"Unknown source type: {source.source_type}")
+
+    async def _scrape_hiring_cafe_source(self, config: dict) -> list[dict]:
+        """Scrape from hiring.cafe with given config."""
+        from bs4 import BeautifulSoup
+        jobs = []
+        
+        query = config.get("query", "software engineer")
+        location = config.get("location", "")
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            params = {"q": query, "limit": config.get("max_results", 50)}
+            if location:
+                params["location"] = location
+            
+            try:
+                response = await client.get("https://hiring.cafe/api/jobs", params=params)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    items = data.get("jobs", data.get("results", data if isinstance(data, list) else []))
+                    
+                    for item in items:
+                        jobs.append({
+                            "title": item.get("title", item.get("job_title", "Unknown")),
+                            "company": item.get("company", item.get("company_name", "Unknown")),
+                            "location": item.get("location", ""),
+                            "description": item.get("description", ""),
+                            "apply_url": item.get("url", item.get("apply_url", item.get("link", ""))),
+                            "tags": item.get("tags", []),
+                            "source": "hiring.cafe",
+                        })
+            except Exception:
+                pass
+        
+        return jobs
+
+    async def _scrape_simplify_jobs_source(self, config: dict) -> list[dict]:
+        """Scrape from SimplifyJobs GitHub."""
+        jobs = []
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            try:
+                response = await client.get(
+                    "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md"
+                )
+                if response.status_code == 200:
+                    content = response.text
+                    # Parse the markdown table
+                    import re
+                    # Find table rows (lines starting with |)
+                    lines = content.split('\n')
+                    in_table = False
+                    for line in lines:
+                        if '| Company |' in line or '| --- |' in line:
+                            in_table = True
+                            continue
+                        if in_table and line.startswith('|'):
+                            parts = [p.strip() for p in line.split('|')[1:-1]]
+                            if len(parts) >= 4:
+                                company = re.sub(r'\[([^\]]+)\].*', r'\1', parts[0]).strip()
+                                title = parts[1].strip() if len(parts) > 1 else "Software Engineer"
+                                location = parts[2].strip() if len(parts) > 2 else ""
+                                
+                                # Extract URL from markdown link
+                                url_match = re.search(r'\[.*?\]\((.*?)\)', parts[-1] if parts[-1] else parts[0])
+                                apply_url = url_match.group(1) if url_match else ""
+                                
+                                if company and apply_url and "🔒" not in line:
+                                    jobs.append({
+                                        "title": title or "Software Engineer",
+                                        "company": company,
+                                        "location": location,
+                                        "description": "",
+                                        "apply_url": apply_url,
+                                        "tags": ["new-grad"],
+                                        "source": "simplify_jobs",
+                                    })
+            except Exception:
+                pass
+        
+        return jobs
+
+    async def _scrape_custom_urls(self, config: dict) -> list[dict]:
+        """Scrape from custom URLs."""
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin
+        
+        jobs = []
+        urls = config.get("urls", [])
+        company = config.get("company", "Unknown")
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            for url in urls:
+                try:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, "html.parser")
+                        
+                        job_selectors = [
+                            "[class*='job-card']", "[class*='job-listing']",
+                            "a[href*='/jobs/']", "a[href*='/careers/']",
+                        ]
+                        
+                        seen_urls = set()
+                        for selector in job_selectors:
+                            for elem in soup.select(selector)[:20]:
+                                title_elem = elem.select_one("h2, h3, h4, [class*='title'], a")
+                                if not title_elem:
+                                    continue
+                                title = title_elem.get_text(strip=True)
+                                if not title:
+                                    continue
+                                
+                                link = elem.get("href") if elem.name == "a" else None
+                                if not link:
+                                    link_elem = elem.select_one("a[href]")
+                                    if link_elem:
+                                        link = link_elem.get("href")
+                                
+                                if not link or link in seen_urls:
+                                    continue
+                                
+                                if link.startswith("/"):
+                                    link = urljoin(url, link)
+                                
+                                seen_urls.add(link)
+                                jobs.append({
+                                    "title": title[:200],
+                                    "company": company,
+                                    "location": None,
+                                    "description": None,
+                                    "apply_url": link,
+                                    "tags": [],
+                                    "source": "custom",
+                                })
+                except Exception:
+                    pass
+        
+        return jobs
+
+    async def _save_jobs(self, jobs: list[dict]) -> int:
+        """Save scraped jobs to database, return count of newly added."""
+        session = get_session()
+        added = 0
+        try:
+            for job_data in jobs:
+                existing = session.query(Job).filter(Job.apply_url == job_data["apply_url"]).first()
+                if existing:
+                    continue
+                
+                job = Job(
+                    title=job_data["title"],
+                    company=job_data["company"],
+                    location=job_data.get("location"),
+                    description=job_data.get("description"),
+                    apply_url=job_data["apply_url"],
+                    source_url=job_data.get("source", ""),
+                )
+                if job_data.get("tags"):
+                    job.set_tags(job_data["tags"])
+                session.add(job)
+                added += 1
+            session.commit()
+        finally:
+            session.close()
+        
+        return added
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self) -> None:
+        """Cancel and close."""
+        self.dismiss(False)
+
+    def key_escape(self) -> None:
+        """Handle escape key."""
+        self.dismiss(False)
+
+
+class SettingsScreen(ModalScreen[bool]):
+    """Modal screen for application settings."""
+
+    CSS = """
+    SettingsScreen {
+        align: center middle;
+    }
+
+    #settings-container {
+        width: 85;
+        height: 40;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #settings-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    .section-header {
+        margin-top: 1;
+        text-style: bold;
+        color: $secondary;
+    }
+
+    .field-label {
+        margin-top: 1;
+        color: $primary;
+    }
+
+    #settings-scroll {
+        height: 1fr;
+    }
+
+    #sources-list {
+        height: 12;
+        border: solid $secondary;
+        margin: 1 0;
+    }
+
+    #settings-buttons {
+        dock: bottom;
+        height: 3;
+        align: center middle;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        """Initialize."""
+        super().__init__()
+        self.settings: Optional[AppSettings] = None
+        self.sources: list[ScraperSource] = []
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets."""
+        session = get_session()
+        try:
+            self.settings = AppSettings.get_settings(session)
+            self.sources = list(session.query(ScraperSource).all())
+        finally:
+            session.close()
+
+        with Vertical(id="settings-container"):
+            yield Label("Settings", id="settings-title")
+            
+            with VerticalScroll(id="settings-scroll"):
+                # API Server Settings
+                yield Label("── API Server ──", classes="section-header")
+                yield Label("API Server URL (for remote scraping):", classes="field-label")
+                yield Input(
+                    id="api-url-input",
+                    placeholder="http://localhost:8787",
+                    value=self.settings.api_server_url if self.settings else "http://localhost:8787",
+                )
+                
+                yield Label("Enable Auto-Scraping:", classes="field-label")
+                with Horizontal():
+                    yield Switch(id="auto-scrape-switch", value=self.settings.auto_scrape_enabled if self.settings else False)
+                    yield Label("Automatically scrape on schedule")
+                
+                # Scraping Sources
+                yield Label("── Scraping Sources ──", classes="section-header")
+                yield Label("Configure source schedules (manual, hourly, daily, weekly):")
+                yield OptionList(id="sources-list")
+                
+                with Horizontal():
+                    yield Button("Add Source", id="add-source", variant="success")
+                    yield Button("Edit Selected", id="edit-source", variant="primary")
+                    yield Button("Delete Selected", id="delete-source", variant="error")
+            
+            with Horizontal(id="settings-buttons"):
+                yield Button("Save", id="save", variant="success")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_mount(self) -> None:
+        """Called when mounted."""
+        self._refresh_sources_list()
+
+    def _refresh_sources_list(self) -> None:
+        """Refresh the sources list display."""
+        session = get_session()
+        try:
+            self.sources = list(session.query(ScraperSource).all())
+        finally:
+            session.close()
+        
+        sources_list = self.query_one("#sources-list", OptionList)
+        sources_list.clear_options()
+        
+        for source in self.sources:
+            status = "✓" if source.enabled else "✗"
+            schedule_icon = {"manual": "🖐️", "hourly": "⏰", "daily": "📅", "weekly": "📆"}.get(source.schedule, "❓")
+            sources_list.add_option(Option(
+                f"{status} {schedule_icon} {source.name} ({source.source_type})",
+                id=source.id,
+            ))
+
+    @on(Button.Pressed, "#add-source")
+    def add_source(self) -> None:
+        """Add a new scraping source."""
+        def on_result(result: bool) -> None:
+            if result:
+                self._refresh_sources_list()
+        self.app.push_screen(EditSourceScreen(), on_result)
+
+    @on(Button.Pressed, "#edit-source")
+    def edit_source(self) -> None:
+        """Edit the selected scraping source."""
+        sources_list = self.query_one("#sources-list", OptionList)
+        if sources_list.highlighted is not None and sources_list.highlighted < len(self.sources):
+            source = self.sources[sources_list.highlighted]
+            def on_result(result: bool) -> None:
+                if result:
+                    self._refresh_sources_list()
+            self.app.push_screen(EditSourceScreen(source.id), on_result)
+
+    @on(Button.Pressed, "#delete-source")
+    def delete_source(self) -> None:
+        """Delete the selected scraping source."""
+        sources_list = self.query_one("#sources-list", OptionList)
+        if sources_list.highlighted is not None and sources_list.highlighted < len(self.sources):
+            source = self.sources[sources_list.highlighted]
+            session = get_session()
+            try:
+                db_source = session.query(ScraperSource).filter(ScraperSource.id == source.id).first()
+                if db_source:
+                    session.delete(db_source)
+                    session.commit()
+            finally:
+                session.close()
+            self._refresh_sources_list()
+
+    @on(Button.Pressed, "#save")
+    def save_settings(self) -> None:
+        """Save the settings."""
+        api_url = self.query_one("#api-url-input", Input).value.strip()
+        auto_scrape = self.query_one("#auto-scrape-switch", Switch).value
+
+        if not api_url:
+            api_url = "http://localhost:8787"
+
+        session = get_session()
+        try:
+            settings = AppSettings.get_settings(session)
+            settings.api_server_url = api_url
+            settings.auto_scrape_enabled = auto_scrape
+            session.commit()
+        finally:
+            session.close()
+
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self) -> None:
+        """Cancel and close."""
+        self.dismiss(False)
+
+    def key_escape(self) -> None:
+        """Handle escape key."""
+        self.dismiss(False)
+
+
+class EditSourceScreen(ModalScreen[bool]):
+    """Modal screen for editing a scraping source with dynamic config fields."""
+
+    CSS = """
+    EditSourceScreen {
+        align: center middle;
+    }
+
+    #edit-source-container {
+        width: 80;
+        height: 85%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #edit-source-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    .field-label {
+        margin-top: 1;
+        color: $primary;
+    }
+
+    .section-header {
+        margin-top: 1;
+        text-style: bold;
+        color: $secondary;
+    }
+
+    #edit-source-scroll {
+        height: 1fr;
+    }
+
+    #config-fields {
+        border: solid $secondary;
+        padding: 1;
+        margin-top: 1;
+    }
+
+    #edit-source-buttons {
+        dock: bottom;
+        height: 3;
+        align: center middle;
+    }
+
+    Select {
+        width: 100%;
+    }
+
+    TextArea {
+        height: 5;
+    }
+    """
+
+    def __init__(self, source_id: Optional[str] = None) -> None:
+        """Initialize with optional source ID for editing."""
+        super().__init__()
+        self.source_id = source_id
+        self.source: Optional[ScraperSource] = None
+        self.current_type = "hiring_cafe"
+        if source_id:
+            session = get_session()
+            try:
+                self.source = session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+                if self.source:
+                    self.current_type = self.source.source_type
+            finally:
+                session.close()
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets."""
+        title = "Edit Scraping Source" if self.source else "Add Scraping Source"
+        
+        source_type_options = [(v, k) for k, v in ScraperSource.SOURCE_TYPES.items()]
+        schedule_options = [(s.capitalize(), s) for s in ScraperSource.SCHEDULE_OPTIONS]
+        
+        with Vertical(id="edit-source-container"):
+            yield Label(title, id="edit-source-title")
+            
+            with VerticalScroll(id="edit-source-scroll"):
+                yield Label("Source Name:", classes="field-label")
+                yield Input(
+                    id="name-input",
+                    placeholder="My Scraping Source",
+                    value=self.source.name if self.source else "",
+                )
+                
+                yield Label("Source Type:", classes="field-label")
+                yield Select(
+                    source_type_options,
+                    id="type-select",
+                    value=self.source.source_type if self.source else "hiring_cafe",
+                )
+                
+                yield Label("Schedule:", classes="field-label")
+                yield Select(
+                    schedule_options,
+                    id="schedule-select",
+                    value=self.source.schedule if self.source else "manual",
+                )
+                
+                yield Label("Enabled:", classes="field-label")
+                with Horizontal():
+                    yield Switch(id="enabled-switch", value=self.source.enabled if self.source else True)
+                    yield Label("Source is active")
+                
+                # Dynamic config fields container
+                yield Label("── Configuration ──", classes="section-header")
+                yield Container(id="config-fields")
+            
+            with Horizontal(id="edit-source-buttons"):
+                yield Button("Save", id="save", variant="success")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    async def on_mount(self) -> None:
+        """Called when mounted."""
+        await self._rebuild_config_fields(self.current_type)
+
+    @on(Select.Changed, "#type-select")
+    async def type_changed(self, event: Select.Changed) -> None:
+        """Handle source type change - rebuild config fields."""
+        if event.value:
+            self.current_type = str(event.value)
+            await self._rebuild_config_fields(self.current_type)
+
+    async def _rebuild_config_fields(self, source_type: str) -> None:
+        """Rebuild the config fields based on source type."""
+        container = self.query_one("#config-fields", Container)
+        await container.remove_children()
+        
+        fields = ScraperSource.CONFIG_FIELDS.get(source_type, [])
+        config = self.source.get_config() if self.source and self.source.source_type == source_type else {}
+        
+        for field in fields:
+            name = field["name"]
+            label = field["label"]
+            field_type = field["type"]
+            default = field.get("default", "")
+            
+            # Get current value from config or use default
+            value = config.get(name, default)
+            
+            # Create label
+            lbl = Label(f"{label}:", classes="field-label")
+            container.mount(lbl)
+            
+            if field_type == "text":
+                inp = Input(
+                    id=f"config-{name}",
+                    value=str(value) if value else "",
+                    placeholder=str(default),
+                )
+                container.mount(inp)
+            elif field_type == "number":
+                inp = Input(
+                    id=f"config-{name}",
+                    value=str(value) if value else str(default),
+                    placeholder=str(default),
+                )
+                container.mount(inp)
+            elif field_type == "bool":
+                sw = Switch(id=f"config-{name}", value=bool(value))
+                container.mount(sw)
+            elif field_type == "select":
+                options = [(opt.replace("-", " ").title(), opt) for opt in field.get("options", [])]
+                sel = Select(options, id=f"config-{name}", value=str(value) if value else str(default))
+                container.mount(sel)
+            elif field_type == "multiline":
+                # For multiline, convert list to newline-separated string
+                if isinstance(value, list):
+                    value = "\n".join(value)
+                inp = Input(
+                    id=f"config-{name}",
+                    value=str(value) if value else "",
+                    placeholder="Enter values, comma-separated for multiple",
+                )
+                container.mount(inp)
+
+    def _collect_config(self) -> dict:
+        """Collect config values from the dynamic fields."""
+        config = {}
+        fields = ScraperSource.CONFIG_FIELDS.get(self.current_type, [])
+        
+        for field in fields:
+            name = field["name"]
+            field_type = field["type"]
+            widget_id = f"#config-{name}"
+            
+            try:
+                if field_type == "bool":
+                    widget = self.query_one(widget_id, Switch)
+                    config[name] = widget.value
+                elif field_type == "select":
+                    widget = self.query_one(widget_id, Select)
+                    config[name] = str(widget.value)
+                elif field_type == "number":
+                    widget = self.query_one(widget_id, Input)
+                    try:
+                        config[name] = int(widget.value)
+                    except ValueError:
+                        config[name] = field.get("default", 0)
+                elif field_type == "multiline":
+                    widget = self.query_one(widget_id, Input)
+                    # Split by comma or newline
+                    value = widget.value.strip()
+                    if value:
+                        items = [v.strip() for v in value.replace("\n", ",").split(",") if v.strip()]
+                        config[name] = items
+                    else:
+                        config[name] = []
+                else:  # text
+                    widget = self.query_one(widget_id, Input)
+                    value = widget.value.strip()
+                    # Handle comma-separated lists for certain fields
+                    if name in ("experience_levels", "categories"):
+                        config[name] = [v.strip() for v in value.split(",") if v.strip()]
+                    else:
+                        config[name] = value
+            except Exception:
+                # Field not found, use default
+                config[name] = field.get("default", "")
+        
+        return config
+
+    @on(Button.Pressed, "#save")
+    def save_source(self) -> None:
+        """Save the source."""
+        name = self.query_one("#name-input", Input).value.strip()
+        source_type = str(self.query_one("#type-select", Select).value)
+        schedule = str(self.query_one("#schedule-select", Select).value)
+        enabled = self.query_one("#enabled-switch", Switch).value
+        
+        if not name:
+            return
+        
+        config = self._collect_config()
+        
+        session = get_session()
+        try:
+            if self.source_id:
+                source = session.query(ScraperSource).filter(ScraperSource.id == self.source_id).first()
+                if source:
+                    source.name = name
+                    source.source_type = source_type
+                    source.schedule = schedule
+                    source.enabled = enabled
+                    source.set_config(config)
+            else:
+                source = ScraperSource(
+                    name=name,
+                    source_type=source_type,
+                    schedule=schedule,
+                    enabled=enabled,
+                )
+                source.set_config(config)
+                session.add(source)
+            session.commit()
+        finally:
+            session.close()
+        
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self) -> None:
+        """Cancel and close."""
+        self.dismiss(False)
+
+    def key_escape(self) -> None:
+        """Handle escape key."""
+        self.dismiss(False)
 
 
 class JobTrackApp(App):
@@ -1211,6 +2143,29 @@ class JobTrackApp(App):
         color: $text;
         margin-left: 2;
     }
+
+    #settings-view {
+        padding: 1;
+    }
+
+    #settings-summary {
+        height: auto;
+        padding: 1;
+        border: solid $secondary;
+        margin-bottom: 1;
+    }
+
+    #settings-actions {
+        height: 3;
+    }
+
+    #settings-actions Button {
+        margin-right: 1;
+    }
+
+    #scrape-btn {
+        margin-left: 2;
+    }
     """
 
     BINDINGS = [
@@ -1223,13 +2178,15 @@ class JobTrackApp(App):
         Binding("n", "add_profile", "New Profile"),
         Binding("f", "toggle_filter", "Toggle Filters"),
         Binding("slash", "search", "Search"),
-        Binding("s", "scrape", "Scrape Jobs"),
+        Binding("s", "scrape_sources", "Scrape Sources"),
         Binding("h", "hiring_cafe", "hiring.cafe"),
+        Binding("g", "settings", "Settings"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("1", "switch_tab_jobs", "Jobs Tab", show=False),
         Binding("2", "switch_tab_history", "History Tab", show=False),
         Binding("3", "switch_tab_profiles", "Profiles Tab", show=False),
+        Binding("4", "switch_tab_settings", "Settings Tab", show=False),
     ]
 
     def __init__(self) -> None:
@@ -1247,7 +2204,7 @@ class JobTrackApp(App):
         yield Header(show_clock=True)
         with TabbedContent():
             with TabPane("Jobs", id="jobs-tab"):
-                with Container(id="main-container"):
+                with Vertical(id="main-container"):
                     with Horizontal(id="filter-bar"):
                         yield Label("Filters:")
                         yield Switch(id="new-grad-filter")
@@ -1257,6 +2214,7 @@ class JobTrackApp(App):
                         yield Switch(id="pending-filter")
                         yield Label("Pending")
                         yield Input(id="search-input", placeholder="Search...")
+                        yield Button("Scrape", id="scrape-btn", variant="success")
                     yield DataTable(id="job-table")
             with TabPane("Application History", id="history-tab"):
                 with Vertical(classes="tab-content"):
@@ -1273,7 +2231,13 @@ class JobTrackApp(App):
                         yield Button("Upload Resume", id="upload-resume-btn", variant="primary")
                     yield OptionList(id="profile-list")
                     yield Static(id="profile-details")
-        yield Static("Ready | Press ? for help", id="status-bar")
+            with TabPane("Settings", id="settings-tab"):
+                with Vertical(id="settings-view"):
+                    yield Static(id="settings-summary")
+                    with Horizontal(id="settings-actions"):
+                        yield Button("Edit Settings", id="edit-settings-btn", variant="primary")
+                        yield Button("Manage Sources", id="manage-sources-btn", variant="success")
+        yield Static("Ready | Press 's' to scrape, 'g' for settings", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1291,6 +2255,39 @@ class JobTrackApp(App):
         self.refresh_jobs()
         self.refresh_history()
         self.refresh_profiles()
+        self.refresh_settings_summary()
+        
+        # Focus the job table for immediate navigation with j/k
+        table.focus()
+
+    def refresh_settings_summary(self) -> None:
+        """Refresh the settings summary display."""
+        session = get_session()
+        try:
+            settings = AppSettings.get_settings(session)
+            sources = session.query(ScraperSource).all()
+            
+            enabled_sources = [s for s in sources if s.enabled]
+            scheduled_sources = [s for s in sources if s.schedule != "manual"]
+            
+            lines = [
+                "[bold]API Server Settings[/bold]",
+                f"  Server URL: {settings.api_server_url}",
+                f"  Auto-Scrape: {'Enabled' if settings.auto_scrape_enabled else 'Disabled'}",
+                "",
+                "[bold]Scraping Sources[/bold]",
+                f"  Total Sources: {len(sources)}",
+                f"  Enabled: {len(enabled_sources)}",
+                f"  Scheduled (non-manual): {len(scheduled_sources)}",
+                "",
+                "[bold]Quick Actions[/bold]",
+                "  Press 's' to open scraping sources dropdown",
+                "  Press 'g' to edit settings",
+            ]
+            
+            self.query_one("#settings-summary", Static).update("\n".join(lines))
+        finally:
+            session.close()
 
     def refresh_jobs(self) -> None:
         """Refresh job list from database."""
@@ -1363,7 +2360,7 @@ class JobTrackApp(App):
                 if job.get("profile_id"):
                     profile = session.query(Profile).filter(Profile.id == job["profile_id"]).first()
                     if profile:
-                        profile_name = profile.name
+                        profile_name = profile.profile_name
 
                 applied_date = ""
                 if job.get("applied_at"):
@@ -1394,7 +2391,7 @@ class JobTrackApp(App):
             for profile in profiles:
                 resume_count = len(profile.get_resume_versions())
                 profile_list.add_option(Option(
-                    f"{profile.name} ({profile.email}) - {resume_count} resumes",
+                    f"{profile.profile_name} ({profile.get_full_name()}) - {resume_count} resumes",
                     id=profile.id,
                 ))
             
@@ -1420,7 +2417,8 @@ class JobTrackApp(App):
             self.selected_profile = profile
             
             details = []
-            details.append(f"[bold]Name:[/bold] {profile.name}")
+            details.append(f"[bold]Profile:[/bold] {profile.profile_name}")
+            details.append(f"[bold]Name:[/bold] {profile.get_full_name()}")
             details.append(f"[bold]Email:[/bold] {profile.email}")
             if profile.phone:
                 details.append(f"[bold]Phone:[/bold] {profile.phone}")
@@ -1487,12 +2485,13 @@ class JobTrackApp(App):
         self.refresh_jobs()
 
     @on(Button.Pressed, "#add-application-btn")
-    async def add_application_pressed(self) -> None:
+    def add_application_pressed(self) -> None:
         """Handle add application button."""
-        result = await self.push_screen_wait(AddApplicationScreen())
-        if result:
-            self.refresh_history()
-            self.update_status("Application added")
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_history()
+                self.update_status("Application added")
+        self.push_screen(AddApplicationScreen(), on_result)
 
     @on(Button.Pressed, "#remove-application-btn")
     def remove_application_pressed(self) -> None:
@@ -1517,24 +2516,26 @@ class JobTrackApp(App):
             session.close()
 
     @on(Button.Pressed, "#new-profile-btn")
-    async def new_profile_pressed(self) -> None:
+    def new_profile_pressed(self) -> None:
         """Handle new profile button."""
-        result = await self.push_screen_wait(ProfileEditScreen())
-        if result:
-            self.refresh_profiles()
-            self.update_status("Profile created")
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_profiles()
+                self.update_status("Profile created")
+        self.push_screen(ProfileEditScreen(), on_result)
 
     @on(Button.Pressed, "#edit-profile-btn")
-    async def edit_profile_pressed(self) -> None:
+    def edit_profile_pressed(self) -> None:
         """Handle edit profile button."""
         if not self.selected_profile_id:
             self.update_status("No profile selected")
             return
-        result = await self.push_screen_wait(ProfileEditScreen(self.selected_profile_id))
-        if result:
-            self.refresh_profiles()
-            self._update_profile_details()
-            self.update_status("Profile updated")
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_profiles()
+                self._update_profile_details()
+                self.update_status("Profile updated")
+        self.push_screen(ProfileEditScreen(self.selected_profile_id), on_result)
 
     @on(Button.Pressed, "#delete-profile-btn")
     def delete_profile_pressed(self) -> None:
@@ -1556,16 +2557,41 @@ class JobTrackApp(App):
             session.close()
 
     @on(Button.Pressed, "#upload-resume-btn")
-    async def upload_resume_pressed(self) -> None:
+    def upload_resume_pressed(self) -> None:
         """Handle upload resume button."""
         if not self.selected_profile_id:
             self.update_status("No profile selected")
             return
-        result = await self.push_screen_wait(ResumeUploadScreen(self.selected_profile_id))
-        if result:
-            self.refresh_profiles()
-            self._update_profile_details()
-            self.update_status("Resume uploaded")
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_profiles()
+                self._update_profile_details()
+                self.update_status("Resume uploaded")
+        self.push_screen(ResumeUploadScreen(self.selected_profile_id), on_result)
+
+    @on(Button.Pressed, "#scrape-btn")
+    def scrape_btn_pressed(self) -> None:
+        """Handle scrape button in filter bar."""
+        self.action_scrape_sources()
+
+    @on(Button.Pressed, "#edit-settings-btn")
+    def edit_settings_pressed(self) -> None:
+        """Handle edit settings button."""
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_settings_summary()
+                self.update_status("Settings saved")
+        self.push_screen(SettingsScreen(), on_result)
+
+    @on(Button.Pressed, "#manage-sources-btn")
+    def manage_sources_pressed(self) -> None:
+        """Handle manage sources button."""
+        def on_result(result: bool) -> None:
+            self.refresh_settings_summary()
+            if result:
+                self.refresh_jobs()
+                self.update_status("Scraping complete")
+        self.push_screen(ScrapingSourcesScreen(), on_result)
 
     def action_refresh(self) -> None:
         """Refresh all data."""
@@ -1579,7 +2605,18 @@ class JobTrackApp(App):
             focused = self.focused
             if isinstance(focused, DataTable):
                 focused.action_cursor_down()
-        except:
+            else:
+                # Try to find and move cursor in the active tab's table
+                tabs = self.query_one(TabbedContent)
+                if tabs.active == "jobs-tab":
+                    table = self.query_one("#job-table", DataTable)
+                    table.focus()
+                    table.action_cursor_down()
+                elif tabs.active == "history-tab":
+                    table = self.query_one("#history-table", DataTable)
+                    table.focus()
+                    table.action_cursor_down()
+        except Exception:
             pass
 
     def action_cursor_up(self) -> None:
@@ -1588,7 +2625,18 @@ class JobTrackApp(App):
             focused = self.focused
             if isinstance(focused, DataTable):
                 focused.action_cursor_up()
-        except:
+            else:
+                # Try to find and move cursor in the active tab's table
+                tabs = self.query_one(TabbedContent)
+                if tabs.active == "jobs-tab":
+                    table = self.query_one("#job-table", DataTable)
+                    table.focus()
+                    table.action_cursor_up()
+                elif tabs.active == "history-tab":
+                    table = self.query_one("#history-table", DataTable)
+                    table.focus()
+                    table.action_cursor_up()
+        except Exception:
             pass
 
     def action_switch_tab_jobs(self) -> None:
@@ -1602,6 +2650,10 @@ class JobTrackApp(App):
     def action_switch_tab_profiles(self) -> None:
         """Switch to profiles tab."""
         self.query_one(TabbedContent).active = "profiles-tab"
+
+    def action_switch_tab_settings(self) -> None:
+        """Switch to settings tab."""
+        self.query_one(TabbedContent).active = "settings-tab"
 
     def action_open_job(self) -> None:
         """Open job link in browser and mark as pending."""
@@ -1631,68 +2683,86 @@ class JobTrackApp(App):
         if job:
             self.push_screen(JobDetailScreen(job))
 
-    async def action_mark_applied(self) -> None:
+    def action_mark_applied(self) -> None:
         """Mark job as applied with confirmation dialog."""
         job = self.get_selected_job()
         if not job:
             self.update_status("No job selected")
             return
 
-        applied = await self.push_screen_wait(
-            ConfirmApplyScreen(job["title"], job["company"])
-        )
-
-        session = get_session()
-        try:
-            db_job = session.query(Job).filter(Job.id == job["id"]).first()
-            if db_job:
-                db_job.is_pending = False
-                if applied:
-                    db_job.is_applied = True
-                    db_job.applied_at = datetime.datetime.now()
-                    if self.selected_profile_id:
-                        db_job.profile_id = self.selected_profile_id
-                    self.update_status(f"Marked as applied: {job['title']}")
-                else:
-                    self.update_status(f"Not applied: {job['title']}")
-                session.commit()
-        finally:
-            session.close()
-
-        self.refresh_jobs()
-        self.refresh_history()
-
-    async def action_select_profile(self) -> None:
-        """Select a profile for applications."""
-        profile_id = await self.push_screen_wait(ProfileSelectScreen())
-        if profile_id:
-            self.selected_profile_id = profile_id
+        def on_result(applied: bool) -> None:
             session = get_session()
             try:
-                profile = session.query(Profile).filter(Profile.id == profile_id).first()
-                if profile:
-                    self.update_status(f"Selected profile: {profile.name}")
+                db_job = session.query(Job).filter(Job.id == job["id"]).first()
+                if db_job:
+                    db_job.is_pending = False
+                    if applied:
+                        db_job.is_applied = True
+                        db_job.applied_at = datetime.datetime.now()
+                        if self.selected_profile_id:
+                            db_job.profile_id = self.selected_profile_id
+                        self.update_status(f"Marked as applied: {job['title']}")
+                    else:
+                        self.update_status(f"Not applied: {job['title']}")
+                    session.commit()
             finally:
                 session.close()
+            self.refresh_jobs()
+            self.refresh_history()
 
-    async def action_add_profile(self) -> None:
+        self.push_screen(ConfirmApplyScreen(job["title"], job["company"]), on_result)
+
+    def action_select_profile(self) -> None:
+        """Select a profile for applications."""
+        def on_result(profile_id: str | None) -> None:
+            if profile_id:
+                self.selected_profile_id = profile_id
+                session = get_session()
+                try:
+                    profile = session.query(Profile).filter(Profile.id == profile_id).first()
+                    if profile:
+                        self.update_status(f"Selected profile: {profile.profile_name}")
+                finally:
+                    session.close()
+        self.push_screen(ProfileSelectScreen(), on_result)
+
+    def action_add_profile(self) -> None:
         """Add a new profile."""
-        result = await self.push_screen_wait(ProfileEditScreen())
-        if result:
-            self.refresh_profiles()
-            self.update_status("Profile added")
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_profiles()
+                self.update_status("Profile added")
+        self.push_screen(ProfileEditScreen(), on_result)
 
-    async def action_scrape(self) -> None:
-        """Open scrape modal."""
-        result = await self.push_screen_wait(ScrapeScreen())
-        if result:
-            self.refresh_jobs()
+    def action_scrape_sources(self) -> None:
+        """Open scrape sources modal with dropdown of implemented sources."""
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_jobs()
+                self.refresh_settings_summary()
+        self.push_screen(ScrapingSourcesScreen(), on_result)
 
-    async def action_hiring_cafe(self) -> None:
+    def action_scrape(self) -> None:
+        """Open old scrape modal (kept for backwards compatibility)."""
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_jobs()
+        self.push_screen(ScrapeScreen(), on_result)
+
+    def action_settings(self) -> None:
+        """Open settings modal."""
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_settings_summary()
+                self.update_status("Settings saved")
+        self.push_screen(SettingsScreen(), on_result)
+
+    def action_hiring_cafe(self) -> None:
         """Open hiring.cafe search modal."""
-        result = await self.push_screen_wait(HiringCafeSearchScreen())
-        if result:
-            self.refresh_jobs()
+        def on_result(result: bool) -> None:
+            if result:
+                self.refresh_jobs()
+        self.push_screen(HiringCafeSearchScreen(), on_result)
 
     def action_toggle_filter(self) -> None:
         """Toggle between filter presets."""

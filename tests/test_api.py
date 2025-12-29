@@ -171,7 +171,9 @@ class TestProfileEndpoints:
     def test_create_profile(self, test_client):
         """Test creating a new profile."""
         profile_data = {
-            "name": "John Doe",
+            "profile_name": "Tech Applications",
+            "first_name": "John",
+            "last_name": "Doe",
             "email": "john@example.com",
             "phone": "+1-555-555-5555",
             "linkedin_url": "https://linkedin.com/in/johndoe",
@@ -179,26 +181,29 @@ class TestProfileEndpoints:
         response = test_client.post("/api/profiles", json=profile_data)
         assert response.status_code == 200
         data = response.json()
-        assert data["name"] == "John Doe"
+        assert data["profile_name"] == "Tech Applications"
+        assert data["first_name"] == "John"
+        assert data["last_name"] == "Doe"
+        assert data["full_name"] == "John Doe"
         assert data["email"] == "john@example.com"
         assert data["phone"] == "+1-555-555-5555"
 
     def test_get_profile(self, test_client):
         """Test getting a specific profile."""
         # Create a profile first
-        profile_data = {"name": "Jane Smith", "email": "jane@example.com"}
+        profile_data = {"profile_name": "Default", "first_name": "Jane", "last_name": "Smith", "email": "jane@example.com"}
         create_response = test_client.post("/api/profiles", json=profile_data)
         profile_id = create_response.json()["id"]
 
         # Get the profile
         response = test_client.get(f"/api/profiles/{profile_id}")
         assert response.status_code == 200
-        assert response.json()["name"] == "Jane Smith"
+        assert response.json()["full_name"] == "Jane Smith"
 
     def test_update_profile(self, test_client):
         """Test updating a profile."""
         # Create a profile first
-        profile_data = {"name": "Bob Builder", "email": "bob@example.com"}
+        profile_data = {"profile_name": "Default", "first_name": "Bob", "last_name": "Builder", "email": "bob@example.com"}
         create_response = test_client.post("/api/profiles", json=profile_data)
         profile_id = create_response.json()["id"]
 
@@ -211,7 +216,9 @@ class TestProfileEndpoints:
     def test_create_profile_with_address(self, test_client):
         """Test creating a profile with address fields."""
         profile_data = {
-            "name": "Charlie Brown",
+            "profile_name": "Home Address Profile",
+            "first_name": "Charlie",
+            "last_name": "Brown",
             "email": "charlie@example.com",
             "address_street": "123 Main St",
             "address_city": "Springfield",
@@ -222,7 +229,7 @@ class TestProfileEndpoints:
         response = test_client.post("/api/profiles", json=profile_data)
         assert response.status_code == 200
         data = response.json()
-        assert data["name"] == "Charlie Brown"
+        assert data["full_name"] == "Charlie Brown"
         assert data["address_street"] == "123 Main St"
         assert data["address_city"] == "Springfield"
         assert data["address_state"] == "IL"
@@ -232,7 +239,7 @@ class TestProfileEndpoints:
     def test_update_profile_address(self, test_client):
         """Test updating profile address fields."""
         # Create a profile first
-        profile_data = {"name": "Dan Smith", "email": "dan@example.com"}
+        profile_data = {"profile_name": "Default", "first_name": "Dan", "last_name": "Smith", "email": "dan@example.com"}
         create_response = test_client.post("/api/profiles", json=profile_data)
         profile_id = create_response.json()["id"]
 
@@ -249,7 +256,7 @@ class TestProfileEndpoints:
     def test_delete_profile(self, test_client):
         """Test deleting a profile."""
         # Create a profile
-        profile_data = {"name": "Delete Me", "email": "delete@example.com"}
+        profile_data = {"profile_name": "To Delete", "first_name": "Delete", "last_name": "Me", "email": "delete@example.com"}
         create_response = test_client.post("/api/profiles", json=profile_data)
         profile_id = create_response.json()["id"]
 

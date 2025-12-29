@@ -5,20 +5,30 @@ This server runs on localhost only and provides endpoints for:
 - Managing user profiles
 - Triggering scrape operations
 - Resume uploads
+- Streaming scrape progress via SSE
 """
 
+import asyncio
 import datetime
+import json
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from job_track.db.models import Job, Profile, get_resume_dir, get_session, init_db
+from job_track.db.models import Job, Profile, ScraperSource, get_resume_dir, get_session, init_db
+from job_track.scraper import simplify_jobs
+from job_track.scraper.simplify_jobs import SimplifyJobsScraper, SimplifyJobsConfig
+from job_track.scraper.hiring_cafe import HiringCafeScraper, SearchConfig
+from job_track.scraper.scraper import (
+    ScrapeEventType, ScrapeCompleteEvent, ScrapeJobEvent,
+)
 
 
 @asynccontextmanager
@@ -91,7 +101,9 @@ class ApplyConfirm(BaseModel):
 class ProfileCreate(BaseModel):
     """Model for creating a new profile."""
 
-    name: str
+    profile_name: str
+    first_name: str
+    last_name: str
     email: str
     phone: Optional[str] = None
     address_street: Optional[str] = None
@@ -107,7 +119,9 @@ class ProfileCreate(BaseModel):
 class ProfileUpdate(BaseModel):
     """Model for updating a profile."""
 
-    name: Optional[str] = None
+    profile_name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     address_street: Optional[str] = None
@@ -135,6 +149,15 @@ class HiringCafeScrapeRequest(BaseModel):
     experience_levels: list[str] = ["entry-level", "internship"]
     location: str = "United States"
     max_results: int = 50
+
+
+class SimplifyJobsScrapeRequest(BaseModel):
+    """Model for triggering a SimplifyJobs scrape request."""
+
+    categories: list[str] = ["software-engineering"]
+    include_inactive: bool = False
+    location_filter: Optional[str] = None
+    max_age_days: Optional[int] = None
 
 
 # Job endpoints
@@ -339,7 +362,9 @@ async def create_profile(profile_data: ProfileCreate):
     session = get_session()
     try:
         profile = Profile(
-            name=profile_data.name,
+            profile_name=profile_data.profile_name,
+            first_name=profile_data.first_name,
+            last_name=profile_data.last_name,
             email=profile_data.email,
             phone=profile_data.phone,
             address_street=profile_data.address_street,
@@ -368,8 +393,12 @@ async def update_profile(profile_id: str, profile_data: ProfileUpdate):
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
 
-        if profile_data.name is not None:
-            profile.name = profile_data.name
+        if profile_data.profile_name is not None:
+            profile.profile_name = profile_data.profile_name
+        if profile_data.first_name is not None:
+            profile.first_name = profile_data.first_name
+        if profile_data.last_name is not None:
+            profile.last_name = profile_data.last_name
         if profile_data.email is not None:
             profile.email = profile_data.email
         if profile_data.phone is not None:
@@ -739,6 +768,340 @@ async def get_hiring_cafe_presets():
             },
         }
     }
+
+
+@app.post("/api/scrape/simplify-jobs")
+async def scrape_simplify_jobs(request: SimplifyJobsScrapeRequest):
+    """Scrape job listings from SimplifyJobs GitHub repository.
+
+    This endpoint scrapes the SimplifyJobs New-Grad-Positions GitHub
+    repository README for curated new-grad job listings.
+    """
+
+    session = get_session()
+    results = {"scraped": 0, "added": 0, "skipped": 0, "errors": []}
+    jobs = await simplify_jobs.scrape_simplify_jobs(simplify_jobs.SimplifyJobsConfig.software_engineering())
+    print ("HIIII")
+    results["scraped"] = len(jobs)
+    for scraped_job in jobs:
+        try:
+            # Check if job already exists
+            existing = session.query(Job).filter(
+                Job.apply_url == scraped_job.apply_url
+            ).first()
+            if existing:
+                results["skipped"] += 1
+                continue
+
+
+            job = Job(
+                id=scraped_job.generate_id(),
+                title=scraped_job.title,
+                company=scraped_job.company,
+                location=scraped_job.location,
+                description=scraped_job.description,
+                apply_url=scraped_job.apply_url,
+                source_url=scraped_job.source_url,
+            )
+            job.set_tags(scraped_job.tags)
+            session.add(job)
+            session.commit()
+            results["added"] += 1
+
+        except Exception as e:
+            results["errors"].append({
+                "job": scraped_job.title,
+                "error": str(e),
+            })
+        finally:
+            session.close()
+
+    return results
+
+
+@app.get("/api/scrape/sources")
+async def get_scrape_sources():
+    """Get available scraping sources and their configurations.
+    
+    Returns the list of implemented scrapers with their metadata.
+    """
+    return {
+        "sources": {
+            "hiring_cafe": {
+                "name": "Hiring.cafe",
+                "description": "Job aggregator with filtering for new-grad and entry-level positions",
+                "requires_playwright": True,
+                "default_schedule": "manual",
+            },
+            "simplify_jobs": {
+                "name": "SimplifyJobs GitHub",
+                "description": "Curated list of new-grad software engineering positions",
+                "requires_playwright": False,
+                "default_schedule": "manual",
+            },
+            "custom_url": {
+                "name": "Custom URL",
+                "description": "Scrape job listings from any URL",
+                "requires_playwright": False,
+                "default_schedule": "manual",
+            },
+        }
+    }
+
+
+# ============================================================================
+# Scraper Source CRUD Endpoints
+# ============================================================================
+
+
+class ScraperSourceCreate(BaseModel):
+    """Model for creating a scraper source."""
+    name: str
+    source_type: str
+    config: dict = {}
+    schedule: str = "manual"
+    enabled: bool = True
+
+
+class ScraperSourceUpdate(BaseModel):
+    """Model for updating a scraper source."""
+    name: Optional[str] = None
+    source_type: Optional[str] = None
+    config: Optional[dict] = None
+    schedule: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/scraper-sources")
+async def list_scraper_sources():
+    """List all configured scraper sources."""
+    session = get_session()
+    try:
+        sources = session.query(ScraperSource).all()
+        return {"sources": [s.to_dict() for s in sources]}
+    finally:
+        session.close()
+
+
+@app.get("/api/scraper-sources/{source_id}")
+async def get_scraper_source(source_id: str):
+    """Get a specific scraper source."""
+    session = get_session()
+    try:
+        source = session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Scraper source not found")
+        return source.to_dict()
+    finally:
+        session.close()
+
+
+@app.post("/api/scraper-sources")
+async def create_scraper_source(data: ScraperSourceCreate):
+    """Create a new scraper source."""
+    session = get_session()
+    try:
+        source = ScraperSource(
+            name=data.name,
+            source_type=data.source_type,
+            schedule=data.schedule,
+            enabled=data.enabled,
+        )
+        source.set_config(data.config)
+        session.add(source)
+        session.commit()
+        session.refresh(source)
+        return source.to_dict()
+    finally:
+        session.close()
+
+
+@app.patch("/api/scraper-sources/{source_id}")
+async def update_scraper_source(source_id: str, data: ScraperSourceUpdate):
+    """Update a scraper source."""
+    session = get_session()
+    try:
+        source = session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Scraper source not found")
+        
+        if data.name is not None:
+            source.name = data.name
+        if data.source_type is not None:
+            source.source_type = data.source_type
+        if data.config is not None:
+            source.set_config(data.config)
+        if data.schedule is not None:
+            source.schedule = data.schedule
+        if data.enabled is not None:
+            source.enabled = data.enabled
+        
+        session.commit()
+        session.refresh(source)
+        return source.to_dict()
+    finally:
+        session.close()
+
+
+@app.delete("/api/scraper-sources/{source_id}")
+async def delete_scraper_source(source_id: str):
+    """Delete a scraper source."""
+    session = get_session()
+    try:
+        source = session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Scraper source not found")
+        
+        session.delete(source)
+        session.commit()
+        return {"status": "deleted", "source_id": source_id}
+    finally:
+        session.close()
+
+
+# ============================================================================
+# Streaming Scrape Endpoints (SSE)
+# ============================================================================
+
+
+async def _sse_event(event_type: str, data: dict) -> str:
+    """Format a Server-Sent Event."""
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/api/scrape/stream/{source_id}")
+async def scrape_source_stream(source_id: str):
+    """Stream scraping progress for a source using Server-Sent Events.
+    
+    Events emitted:
+    - start: {source_id, source_name, source_type}
+    - progress: {step, total_steps, message, jobs_found, jobs_added}
+    - job: {title, company, location} (for each job found)
+    - complete: {total_scraped, total_added, total_skipped, errors}
+    - error: {message}
+    """
+    session = get_session()
+    try:
+        source = session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Scraper source not found")
+        
+        source_data = source.to_dict()
+    finally:
+        session.close()
+    
+    async def generate_events() -> AsyncGenerator[str, None]:
+        """Generate SSE events for scraping progress."""
+        config = source_data["config"]
+        source_type = source_data["source_type"]
+        
+        # Create the appropriate scraper based on source type
+        scraper = None
+        if source_type == "simplify_jobs":
+            scraper_config = SimplifyJobsConfig(
+                include_inactive=config.get("include_inactive", False),
+                categories=config.get("categories", ["software-engineering"]),
+                max_age_days=config.get("max_age_days"),
+            )
+            scraper = SimplifyJobsScraper(scraper_config)
+        elif source_type == "hiring_cafe":
+            # Parse experience_levels from comma-separated string if needed
+            experience_levels = config.get("experience_levels", ["entry-level", "internship"])
+            if isinstance(experience_levels, str):
+                experience_levels = [e.strip() for e in experience_levels.split(",")]
+            
+            scraper_config = SearchConfig(
+                query=config.get("query", "software engineer"),
+                department=config.get("department", "software-engineering"),
+                experience_levels=experience_levels,
+                location=config.get("location", "United States"),
+                max_results=config.get("max_results", 50),
+            )
+            scraper = HiringCafeScraper(scraper_config)
+        else:
+            yield await _sse_event("error", {"message": f"Unknown source type: {source_type}"})
+            return
+        
+        # Use the scraper's streaming method
+        results = {"scraped": 0, "added": 0, "skipped": 0, "errors": []}
+        all_jobs = []
+        
+        try:
+            async for event in scraper.scrape_stream():
+                event_dict = event.to_dict()
+                event_type = event_dict.pop("event_type")
+                
+                # Add source_id to start event
+                if event_type == "start":
+                    event_dict["source_id"] = source_data["id"]
+                    event_dict["source_name"] = source_data["name"]
+                
+                yield await _sse_event(event_type, event_dict)
+                
+                # Track jobs for database insertion
+                if isinstance(event, ScrapeJobEvent):
+                    all_jobs.append(event.job)
+                
+                # When complete, save jobs to database
+                if isinstance(event, ScrapeCompleteEvent):
+                    results["scraped"] = event.total_scraped
+                    results["errors"] = event.errors
+                    
+                    # Save jobs to database
+                    db_session = get_session()
+                    try:
+                        for job in all_jobs:
+                            if not job.apply_url:
+                                continue
+                            existing = db_session.query(Job).filter(
+                                Job.apply_url == job.apply_url
+                            ).first()
+                            if existing:
+                                results["skipped"] += 1
+                                continue
+                            
+                            db_job = Job(
+                                title=job.title,
+                                company=job.company,
+                                location=job.location,
+                                description=job.description or f"From {source_type}",
+                                apply_url=job.apply_url,
+                                source_url=job.source_url,
+                            )
+                            db_job.set_tags(job.tags)
+                            db_session.add(db_job)
+                            results["added"] += 1
+                        
+                        db_session.commit()
+                        
+                        # Update last scraped time
+                        src = db_session.query(ScraperSource).filter(ScraperSource.id == source_id).first()
+                        if src:
+                            src.last_scraped_at = datetime.datetime.now()
+                            db_session.commit()
+                    finally:
+                        db_session.close()
+                    
+                    # Send final complete event with database stats
+                    yield await _sse_event("complete", {
+                        "total_scraped": results["scraped"],
+                        "total_added": results["added"],
+                        "total_skipped": results["skipped"],
+                        "errors": results["errors"],
+                    })
+                    return
+            
+        except Exception as e:
+            yield await _sse_event("error", {"message": str(e)})
+    
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 def run():

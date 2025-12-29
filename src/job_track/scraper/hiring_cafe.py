@@ -9,10 +9,14 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import AsyncGenerator, Optional
 from urllib.parse import urlencode, urljoin
 
-from .scraper import ScrapedJob, JobScraper
+from .scraper import (
+    ScrapedJob, JobScraper, ScrapeEventUnion,
+    ScrapeStartEvent, ScrapeProgressEvent, ScrapeJobEvent,
+    ScrapeCompleteEvent, ScrapeErrorEvent,
+)
 
 # Playwright is optional - may not be installed in all environments
 try:
@@ -590,6 +594,159 @@ class HiringCafeScraper(JobScraper):
                 return None
             finally:
                 await browser.close()
+
+    async def scrape_stream(self) -> AsyncGenerator[ScrapeEventUnion, None]:
+        """Stream scraping events as an async generator.
+        
+        Yields:
+            ScrapeEvent objects representing progress and results.
+        """
+        yield ScrapeStartEvent(source_name="Hiring.cafe", source_type="hiring_cafe")
+        
+        if not PLAYWRIGHT_AVAILABLE:
+            yield ScrapeErrorEvent(message="Playwright is not installed. Run: pip install playwright && playwright install chromium")
+            return
+        
+        # Use percentage-based progress for better UX
+        # Steps: launch (5%), navigate (10%), wait (15%), scrape loop (15-95%), complete (100%)
+        yield ScrapeProgressEvent(
+            step=5, total_steps=100,
+            message="Launching browser...",
+        )
+        
+        all_jobs: list[ScrapedJob] = []
+        errors: list[str] = []
+        
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=self.headless,
+                    slow_mo=self.slow_mo,
+                )
+                
+                try:
+                    context = await browser.new_context(
+                        viewport={"width": 1920, "height": 1080},
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    )
+                    page = await context.new_page()
+                    
+                    search_url = self._build_search_url()
+                    yield ScrapeProgressEvent(
+                        step=10, total_steps=100,
+                        message="Navigating to hiring.cafe...",
+                    )
+                    
+                    await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                    
+                    yield ScrapeProgressEvent(
+                        step=15, total_steps=100,
+                        message="Waiting for job listings to load...",
+                    )
+                    
+                    await self._wait_for_jobs(page)
+                    
+                    yield ScrapeProgressEvent(
+                        step=20, total_steps=100,
+                        message="Starting to scrape job listings...",
+                    )
+                    
+                    # Scrape jobs and yield each one
+                    scraped_urls = set()
+                    last_count = 0
+                    scroll_attempts = 0
+                    max_scroll_attempts = 15
+                    max_results = self.config.max_results
+                    
+                    while len(all_jobs) < max_results and scroll_attempts < max_scroll_attempts:
+                        job_data_list = await page.evaluate("""
+                            () => {
+                                const jobs = [];
+                                const jobLinks = document.querySelectorAll('a[href*="/viewjob/"]');
+                                
+                                jobLinks.forEach(link => {
+                                    const href = link.getAttribute('href');
+                                    if (!href || href.includes('undefined')) return;
+                                    
+                                    const linkText = link.innerText.trim();
+                                    let container = link;
+                                    for (let i = 0; i < 10; i++) {
+                                        if (container.parentElement) {
+                                            container = container.parentElement;
+                                        }
+                                    }
+                                    const cardText = container.innerText || '';
+                                    
+                                    if (linkText === 'View all' || linkText === 'Job Posting' || 
+                                        linkText.includes('See views') || linkText.length < 3) {
+                                        return;
+                                    }
+                                    
+                                    jobs.push({
+                                        url: href,
+                                        linkText: linkText,
+                                        cardText: cardText.substring(0, 2000),
+                                    });
+                                });
+                                
+                                return jobs;
+                            }
+                        """)
+                        
+                        for job_data in job_data_list:
+                            if len(all_jobs) >= max_results:
+                                break
+                            
+                            job_url = urljoin(self.BASE_URL, job_data['url'])
+                            
+                            if job_url in scraped_urls:
+                                continue
+                            
+                            try:
+                                job = self._parse_job_data(job_data, job_url)
+                                if job and job.title and job.title != "Relevance" and len(job.title) > 2:
+                                    scraped_urls.add(job_url)
+                                    all_jobs.append(job)
+                                    yield ScrapeJobEvent(job=job)
+                            except Exception as e:
+                                errors.append(f"Error parsing job: {e}")
+                                continue
+                        
+                        # Calculate progress: 20% to 95% based on jobs found vs target
+                        progress_pct = 20 + int((len(all_jobs) / max_results) * 75)
+                        progress_pct = min(progress_pct, 95)
+                        
+                        yield ScrapeProgressEvent(
+                            step=progress_pct, total_steps=100,
+                            message=f"Found {len(all_jobs)} of {max_results} jobs (scroll {scroll_attempts + 1}/{max_scroll_attempts})...",
+                            jobs_found=len(all_jobs),
+                        )
+                        
+                        if len(all_jobs) == last_count:
+                            scroll_attempts += 1
+                        else:
+                            scroll_attempts = 0
+                            last_count = len(all_jobs)
+                        
+                        if len(all_jobs) < max_results:
+                            await page.evaluate("window.scrollBy(0, 800)")
+                            await asyncio.sleep(1.5)
+                    
+                finally:
+                    await browser.close()
+            
+            yield ScrapeProgressEvent(
+                step=100, total_steps=100,
+                message=f"Completed: found {len(all_jobs)} jobs",
+                jobs_found=len(all_jobs),
+            )
+            
+            yield ScrapeCompleteEvent(total_scraped=len(all_jobs), jobs=all_jobs, errors=errors)
+            
+        except PlaywrightTimeout as e:
+            yield ScrapeErrorEvent(message=f"Timeout while scraping: {e}")
+        except Exception as e:
+            yield ScrapeErrorEvent(message=str(e))
 
 
 async def scrape_hiring_cafe(
