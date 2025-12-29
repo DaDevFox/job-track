@@ -874,7 +874,7 @@ class AddApplicationScreen(ModalScreen[bool]):
         finally:
             session.close()
 
-        profile_options = [(p.name, p.id) for p in self.profiles]
+        profile_options = [(p.profile_name, p.id) for p in self.profiles]
         if not profile_options:
             profile_options = [("No profiles", "")]
 
