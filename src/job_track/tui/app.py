@@ -2117,6 +2117,8 @@ class EditSourceScreen(ModalScreen[bool]):
 class JobTrackApp(App):
     """Main TUI application for job tracking."""
 
+    ENABLE_COMMAND_PALETTE = False
+
     CSS = """
     Screen {
         layout: vertical;
@@ -2259,10 +2261,15 @@ class JobTrackApp(App):
         Binding("f", "toggle_filter", "Toggle Filters"),
         Binding("slash", "search", "Search"),
         Binding("s", "scrape_sources", "Scrape Sources"),
-        Binding("h", "hiring_cafe", "hiring.cafe"),
+        Binding("c", "hiring_cafe", "hiring.cafe"),
         Binding("g", "settings", "Settings"),
+        Binding("t", "focus_table", "Focus Table"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "tab_left", "Prev Tab", show=False),
+        Binding("l", "tab_right", "Next Tab", show=False),
+        Binding("left", "tab_left", "Prev Tab", show=False),
+        Binding("right", "tab_right", "Next Tab", show=False),
         Binding("1", "switch_tab_jobs", "Jobs Tab", show=False),
         Binding("2", "switch_tab_history", "History Tab", show=False),
         Binding("3", "switch_tab_profiles", "Profiles Tab", show=False),
@@ -2317,11 +2324,14 @@ class JobTrackApp(App):
                     with Horizontal(id="settings-actions"):
                         yield Button("Edit Settings", id="edit-settings-btn", variant="primary")
                         yield Button("Manage Sources", id="manage-sources-btn", variant="success")
-        yield Static("Ready | Press 's' to scrape, 'g' for settings", id="status-bar")
+        yield Static("Ready | 's' scrape, 'c' hiring.cafe, 'g' settings, 'h/l' switch tabs, 't' focus table", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
         """Called when app is mounted."""
+        # Set the light theme
+        self.theme = "textual-light"
+        
         init_db()
         
         table = self.query_one("#job-table", DataTable)
@@ -2535,6 +2545,19 @@ class JobTrackApp(App):
             self.selected_profile_id = str(event.option.id)
             self._update_profile_details()
 
+    @on(DataTable.RowSelected, "#job-table")
+    def job_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter key / row selection on job table - open the job link."""
+        self.action_open_job()
+
+    @on(DataTable.RowSelected, "#history-table")
+    def history_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter key / row selection on history table - open the job link."""
+        job = self.get_selected_applied_job()
+        if job and job.get("apply_url"):
+            webbrowser.open(job["apply_url"])
+            self.update_status(f"Opened: {job['title']}")
+
     def update_status(self, message: str) -> None:
         """Update status bar message."""
         status = self.query_one("#status-bar", Static)
@@ -2734,6 +2757,47 @@ class JobTrackApp(App):
     def action_switch_tab_settings(self) -> None:
         """Switch to settings tab."""
         self.query_one(TabbedContent).active = "settings-tab"
+
+    def action_tab_left(self) -> None:
+        """Switch to previous tab (vi-like h or left arrow)."""
+        tabs = self.query_one(TabbedContent)
+        tab_order = ["jobs-tab", "history-tab", "profiles-tab", "settings-tab"]
+        try:
+            current_idx = tab_order.index(tabs.active)
+            new_idx = (current_idx - 1) % len(tab_order)
+            tabs.active = tab_order[new_idx]
+        except ValueError:
+            tabs.active = "jobs-tab"
+
+    def action_tab_right(self) -> None:
+        """Switch to next tab (vi-like l or right arrow)."""
+        tabs = self.query_one(TabbedContent)
+        tab_order = ["jobs-tab", "history-tab", "profiles-tab", "settings-tab"]
+        try:
+            current_idx = tab_order.index(tabs.active)
+            new_idx = (current_idx + 1) % len(tab_order)
+            tabs.active = tab_order[new_idx]
+        except ValueError:
+            tabs.active = "jobs-tab"
+
+    def action_focus_table(self) -> None:
+        """Focus on the main table of the current tab."""
+        try:
+            tabs = self.query_one(TabbedContent)
+            if tabs.active == "jobs-tab":
+                table = self.query_one("#job-table", DataTable)
+                table.focus()
+            elif tabs.active == "history-tab":
+                table = self.query_one("#history-table", DataTable)
+                table.focus()
+            elif tabs.active == "profiles-tab":
+                profile_list = self.query_one("#profile-list", OptionList)
+                profile_list.focus()
+            elif tabs.active == "settings-tab":
+                # Focus settings summary or first focusable element
+                pass
+        except Exception:
+            pass
 
     def action_open_job(self) -> None:
         """Open job link in browser and mark as pending."""
